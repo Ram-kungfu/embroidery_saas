@@ -23,7 +23,7 @@ load_dotenv()
 # ============================================================
 # APP CONFIG
 # ============================================================
-app = Flask(__name__)
+
 # यह सुनिश्चित करेगा कि सर्वर को templates फोल्डर का पक्का पता हो
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
