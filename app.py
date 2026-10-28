@@ -454,8 +454,11 @@ def admin_approve(pay_id):
 # ============================================================
 with app.app_context():
     try:
+        # यह लाइन डेटाबेस से कनेक्शन को टेस्ट करती है
+        db.engine.connect() 
         db.create_all()
-        # अगर एडमिन पहले से नहीं है, तो उसे बनाएं
+        print("✅ Tables created successfully on PostgreSQL!")
+        
         if not User.query.filter_by(username='admin').first():
             admin = User(username='admin', email='admin@surat.local', is_admin=True)
             admin.set_password('admin123')
@@ -465,12 +468,8 @@ with app.app_context():
             db.session.add(admin)
             db.session.commit()
             print('✅ Default admin created: admin / admin123')
-        else:
-            print('✅ Database connected. Admin already exists.')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
-
-
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
