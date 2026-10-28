@@ -28,14 +28,13 @@ load_dotenv()
 base_dir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'), static_folder=os.path.join(base_dir, 'static'))
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
+
 # डेटाबेस URL सेट करना (Render PostgreSQL के लिए)
 db_url = os.getenv('DATABASE_URL', 'sqlite:///./database.db')
 
-# यह नया हिस्सा जोड़ें जो SQLAlchemy को नए psycopg (v3) ड्राइवर का इस्तेमाल करने को कहेगा
+# यहाँ सुधार किया गया है (सिर्फ postgresql:// रखा है ताकि psycopg2 सही से काम करे)
 if db_url and db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
-elif db_url and db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -473,4 +472,4 @@ with app.app_context():
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=false)
+    app.run(host='0.0.0.0', port=port, debug=False)
