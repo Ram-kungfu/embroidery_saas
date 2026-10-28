@@ -25,9 +25,12 @@ load_dotenv()
 # ============================================================
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
-# पहले यह था: app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
-# अब इसे ऐसे कर दें (./ जोड़ दें):
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///./database.db'
+# डेटाबेस URL सेट करना (Render PostgreSQL के लिए)
+db_url = os.getenv('DATABASE_URL', 'sqlite:///./database.db')
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join('static', 'generated')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
