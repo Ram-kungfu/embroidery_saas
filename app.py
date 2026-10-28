@@ -23,8 +23,10 @@ load_dotenv()
 # ============================================================
 # APP CONFIG
 # ============================================================
-app = Flask(__name__)
+
 # Render को templates और static फोल्डर का पक्का रास्ता दिखाना
+base_dir = os.path.abspath(os.path.dirname(__file__))
+app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'), static_folder=os.path.join(base_dir, 'static'))
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
 
 # डेटाबेस URL सेट करना (Render PostgreSQL के लिए)
