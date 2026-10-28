@@ -1,1 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-gray-900 p-6 md:p-8 rounded-2xl border border-gray-800 shadow-2xl">
+    <div class="flex justify-between items-center mb-6 border-b border-gray-800 pb-4 flex-wrap gap-2">
+        <h2 class="text-2xl font-bold text-indigo-400">✨ AI एम्ब्रॉयडरी जनरेटर</h2>
+        <div class="bg-gray-800 px-4 py-2 rounded-lg border border-gray-700">
+            क्रेडिट: <b class="text-emerald-400" id="creditCount">{{ user.credits }}</b>
+        </div>
+    </div>
 
+    <label class="block text-sm font-medium mb-2 text-gray-300">
+        डिज़ाइन आइडिया / प्रॉम्प्ट:
+    </label>
+    <textarea id="promptInput" rows="3"
+        class="w-full p-3 bg-gray-950 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500"
+        placeholder="e.g., Traditional paisley saree border, zari work, floral motif"></textarea>
+
+    <button onclick="generateDesign()"
+        class="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 font-bold py-3.5 rounded-xl shadow-lg transition">
+        AI डिज़ाइन जनरेट करें ⚡
+    </button>
+
+    <div id="loader" class="hidden text-center py-12">
+        <div class="inline-block animate-spin rounded-full h-10 w-10 border-4 border-indigo-500 border-t-transparent"></div>
+        <p class="text-gray-400 mt-3">AI काम कर रहा है, कृपया प्रतीक्षा करें...</p>
+    </div>
+
+    <div id="resultContainer" class="hidden mt-8 text-center bg-gray-950 p-6 rounded-xl border border-gray-800">
+        <h4 class="text-lg font-semibold mb-3 text-emerald-400">🎉 डिज़ाइन तैयार!</h4>
+        <img id="outputImage" src="" alt="Design" class="mx-auto rounded-lg max-h-96 border border-gray-700 mb-6">
+        <div class="flex flex-wrap justify-center gap-3">
+            <a id="downloadImgBtn" href="#" target="_blank"
+               class="bg-gray-800 hover:bg-gray-700 border border-gray-600 font-bold px-5 py-3 rounded-xl">
+                🖼️ इमेज डाउनलोड
+            </a>
+            <a id="downloadDstBtn" href="#"
+               class="bg-emerald-600 hover:bg-emerald-700 font-bold px-5 py-3 rounded-xl">
+                🧵 .DST फ़ाइल
+            </a>
+            <a id="downloadSvgBtn" href="#"
+               class="bg-amber-600 hover:bg-amber-700 font-bold px-5 py-3 rounded-xl">
+                📐 .SVG वेक्टर
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function generateDesign() {
+    const prompt = document.getElementById('promptInput').value.trim();
+    if (!prompt) { alert('कृपया प्रॉम्प्ट लिखें!'); return; }
+
+    document.getElementById('loader').classList.remove('hidden');
+    document.getElementById('resultContainer').classList.add('hidden');
+
+    try {
+        const res = await fetch('/api/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({prompt})
+        });
+        const data = await res.json();
+        document.getElementById('loader').classList.add('hidden');
+
+        if (!res.ok) { alert(data.message); return; }
+
+        document.getElementById('outputImage').src = data.image_url;
+        document.getElementById('downloadImgBtn').href = data.image_url;
+        document.getElementById('downloadImgBtn').setAttribute('download', 'design.png');
+        document.getElementById('downloadDstBtn').href = '/download/' + data.design_id + '/dst';
+        document.getElementById('downloadSvgBtn').href = '/download/' + data.design_id + '/svg';
+        document.getElementById('creditCount').innerText = data.remaining_credits;
+        const nc = document.getElementById('navCredits');
+        if (nc) nc.innerText = data.remaining_credits;
+        document.getElementById('resultContainer').classList.remove('hidden');
+    } catch (e) {
+        document.getElementById('loader').classList.add('hidden');
+        alert('सर्वर एरर: ' + e.message);
+    }
+}
+</script>
+{% endblock %}
