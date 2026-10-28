@@ -27,8 +27,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
 # डेटाबेस URL सेट करना (Render PostgreSQL के लिए)
 db_url = os.getenv('DATABASE_URL', 'sqlite:///./database.db')
+
+# यह नया हिस्सा जोड़ें जो SQLAlchemy को नए psycopg (v3) ड्राइवर का इस्तेमाल करने को कहेगा
 if db_url and db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif db_url and db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
