@@ -1,1 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="text-center py-8">
+    <h1 class="text-3xl font-extrabold mb-3 text-emerald-400">मासिक सब्सक्रिप्शन प्लान्स</h1>
+    
+    {% if not current_user.is_paid_user %}
+    <div class="bg-indigo-900/50 border border-indigo-500 text-indigo-200 p-3 rounded-lg max-w-2xl mx-auto mb-8 text-sm">
+        🎁 आपका 15 दिन का फ्री ट्रायल चल रहा है!
+    </div>
+    {% endif %}
 
+    <div class="grid md:grid-cols-3 gap-6">
+        <!-- Plans Cards -->
+        <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
+            <div>
+                <h4 class="text-xl font-bold text-amber-400">Starter</h4>
+                <p class="text-3xl font-extrabold my-4">₹{{ plans.starter.price }}</p>
+            </div>
+            <button onclick="showPayment('starter', {{ plans.starter.price }})" class="w-full mt-6 bg-amber-600 hover:bg-amber-700 py-3 rounded-xl font-bold">खरीदें</button>
+        </div>
+
+        <div class="bg-gray-900 p-6 rounded-2xl border-2 border-indigo-500 shadow-xl relative flex flex-col justify-between">
+            <div>
+                <h4 class="text-xl font-bold text-indigo-400">Pro</h4>
+                <p class="text-3xl font-extrabold my-4">₹{{ plans.pro.price }}</p>
+            </div>
+            <button onclick="showPayment('pro', {{ plans.pro.price }})" class="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 py-3 rounded-xl font-bold">खरीदें</button>
+        </div>
+
+        <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
+            <div>
+                <h4 class="text-xl font-bold text-emerald-400">Business</h4>
+                <p class="text-3xl font-extrabold my-4">₹{{ plans.business.price }}</p>
+            </div>
+            <button onclick="showPayment('business', {{ plans.business.price }})" class="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 py-3 rounded-xl font-bold">खरीदें</button>
+        </div>
+    </div>
+</div>
+
+<!-- PAYMENT & WHATSAPP MODAL -->
+<div id="paymentModal" class="hidden fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+    <div class="bg-gray-900 rounded-2xl max-w-md w-full p-6 border border-gray-700 shadow-2xl relative">
+        <button onclick="closeModal()" class="absolute top-3 right-4 text-gray-400 hover:text-white text-2xl">&times;</button>
+        
+        <h3 class="text-2xl font-bold text-amber-400 text-center mb-1">पेमेंट करें</h3>
+        
+        <!-- QR Code -->
+        <div class="bg-white p-2 rounded-xl mx-auto w-48 mb-4 mt-2">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=upi://pay?pa=ramji91221@okicici%26pn=SuratAI" alt="QR">
+        </div>
+
+        <div class="text-center mb-4 bg-gray-800 p-3 rounded-lg border border-gray-700">
+            <p class="text-xs text-gray-400">UPI ID:</p>
+            <p class="font-mono font-bold text-lg text-emerald-400">ramji91221@okicici</p>
+            <p class="text-sm text-gray-300 mt-1">राशि: <b class="text-white" id="payAmountDisplay"></b></p>
+        </div>
+
+        <form onsubmit="submitPayment(event)" class="space-y-3">
+            <input type="hidden" id="selectedPlan" value="">
+            <input type="text" id="utrInput" required placeholder="UTR / Transaction ID दर्ज करें" 
+                   class="w-full p-3 bg-gray-950 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500">
+            <button type="submit" id="submitBtn"
+                    class="w-full bg-emerald-600 hover:bg-emerald-700 font-bold py-3 rounded-xl transition">
+                ✅ पेमेंट जानकारी सबमिट करें
+            </button>
+        </form>
+
+        <!-- WhatsApp Button (शुरुआत में छिपा रहेगा, सबमिट के बाद दिखेगा) -->
+        <div id="whatsappBox" class="hidden mt-4 pt-4 border-t border-gray-700">
+            <p class="text-sm text-yellow-400 text-center mb-3">⚠️ अकाउंट एक्टिवेट करने के लिए अपना पेमेंट स्क्रीनशॉट हमें भेजें:</p>
+            <div class="flex gap-2">
+                <a id="waLink1" href="#" target="_blank" class="flex-1 bg-green-600 hover:bg-green-700 text-center py-2 rounded-lg text-sm font-bold">नंबर 1 पर भेजें</a>
+                <a id="waLink2" href="#" target="_blank" class="flex-1 bg-green-600 hover:bg-green-700 text-center py-2 rounded-lg text-sm font-bold">नंबर 2 पर भेजें</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showPayment(plan, price) {
+    document.getElementById('paymentModal').classList.remove('hidden');
+    document.getElementById('selectedPlan').value = plan;
+    document.getElementById('payAmountDisplay').innerText = '₹' + price;
+    document.getElementById('whatsappBox').classList.add('hidden');
+    document.getElementById('submitBtn').innerText = '✅ पेमेंट जानकारी सबमिट करें';
+    document.getElementById('submitBtn').disabled = false;
+}
+
+function closeModal() {
+    document.getElementById('paymentModal').classList.add('hidden');
+}
+
+async function submitPayment(e) {
+    e.preventDefault();
+    const plan = document.getElementById('selectedPlan').value;
+    const price = document.getElementById('payAmountDisplay').innerText;
+    const utr = document.getElementById('utrInput').value.trim();
+    
+    if (utr.length < 6) { alert('कृपया सही UTR डालें'); return; }
+
+    const res = await fetch('/api/submit-payment', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plan, utr})
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+        // सबमिट सफल - अब WhatsApp बटन दिखाएं
+        document.getElementById('submitBtn').innerText = '✅ सबमिट हो गया!';
+        document.getElementById('submitBtn').disabled = true;
+        
+        // व्हाट्सएप मैसेज तैयार करें (आपके नंबर)
+        const msg = `नमस्ते, मैंने ${plan.toUpperCase()} प्लान (${price}) के लिए पेमेंट किया है। मेरा UTR नंबर: ${utr} है। कृपया मेरा अकाउंट एक्टिवेट करें।`;
+        const encodedMsg = encodeURIComponent(msg);
+        
+        document.getElementById('waLink1').href = `https://wa.me/919793400647?text=${encodedMsg}`;
+        document.getElementById('waLink2').href = `https://wa.me/918840393880?text=${encodedMsg}`;
+        
+        document.getElementById('whatsappBox').classList.remove('hidden');
+    } else {
+        alert(data.message);
+    }
+}
+</script>
+{% endblock %}
