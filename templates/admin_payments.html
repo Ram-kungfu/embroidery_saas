@@ -1,1 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="text-2xl font-bold text-purple-400 mb-6">💳 पेमेंट रिक्वेस्ट्स (एडमिन पैनल)</h2>
 
+{% if payments %}
+<div class="overflow-x-auto bg-gray-900 rounded-xl border border-gray-800">
+    <table class="w-full text-sm text-left">
+        <thead class="bg-gray-800 text-gray-300 uppercase text-xs">
+            <tr>
+                <th class="px-4 py-3">यूज़रनेम</th>
+                <th class="px-4 py-3">प्लान</th>
+                <th class="px-4 py-3">राशि</th>
+                <th class="px-4 py-3">UTR नंबर</th>
+                <th class="px-4 py-3">समय</th>
+                <th class="px-4 py-3">स्थिति</th>
+                <th class="px-4 py-3">एक्शन</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in payments %}
+            <tr class="border-t border-gray-800">
+                <td class="px-4 py-3 font-bold text-white">{{ p.user.username }}</td>
+                <td class="px-4 py-3 text-indigo-400">{{ plans[p.plan_key].name }}</td>
+                <td class="px-4 py-3">₹{{ p.amount }}</td>
+                <td class="px-4 py-3 font-mono text-amber-400">{{ p.utr_number }}</td>
+                <td class="px-4 py-3 text-xs text-gray-400">{{ p.created_at.strftime('%d %b, %H:%M') }}</td>
+                <td class="px-4 py-3">
+                    {% if p.status == 'pending' %}
+                        <span class="bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded text-xs">पेंडिंग (चेक करें)</span>
+                    {% elif p.status == 'approved' %}
+                        <span class="bg-emerald-600/20 text-emerald-400 px-2 py-1 rounded text-xs">सक्रिय</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if p.status == 'pending' %}
+                    <!-- जब आपको WhatsApp पर स्क्रीनशॉट मिल जाए और पैसे दिख जाएं, तब यहाँ क्लिक करें -->
+                    <a href="{{ url_for('admin_approve', pay_id=p.id) }}" 
+                       onclick="return confirm('क्या आपने पैसे चेक कर लिए हैं? इस बटन से यूज़र का अकाउंट एक्टिव हो जाएगा।')"
+                       class="bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded text-xs font-bold text-white">
+                        ✅ अप्रूव और एक्टिव करें
+                    </a>
+                    {% else %}
+                    <span class="text-gray-500">-</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="bg-gray-900 p-8 rounded-xl text-center text-gray-400 border border-gray-800">
+    अभी तक कोई पेमेंट रिक्वेस्ट नहीं आई है।
+</div>
+{% endif %}
+{% endblock %}
