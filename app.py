@@ -14,6 +14,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, ImageDraw
 import replicate
 import pyembroidery
+import cv2
+import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -113,59 +115,71 @@ def load_user(user_id):
 
 
 # ============================================================
-# HELPER: AI IMAGE → MACHINE .DST CONVERTER (Professional Approach)
+# HELPER: AI IMAGE → FULLY FILLED MACHINE .DST CONVERTER
 # ============================================================
 def image_to_dst(image_path, dst_path):
     """
-    असली इमेज → EMBROIDERY .DST कन्वर्जन (Step 3 & 4)
-    इसमें हम Pixel स्कैनिंग के बजाय Outline Detection का इस्तेमाल कर रहे हैं।
+    यह फंक्शन इमेज के हर काले हिस्से (डिज़ाइन) को ज़िगज़ैग (Satin Stitch) 
+    से पूरा भरता है, जिससे मशीन पूरा फूल/पत्ती/बॉर्डर बनाती है।
     """
-    import cv2
-    import numpy as np
-
-    # 1. इमेज लोड करें और उसे 500x500 में रीसाइज करें (मशीन के हूप साइज के हिसाब से)
+    # 1. इमेज लोड करें (ब्लैक एंड व्हाइट)
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError("इमेज लोड नहीं हो पाई!")
+    
+    # मशीन के हूप के हिसाब से 500x500 में रीसाइज करें
     img = cv2.resize(img, (500, 500))
     
-    # 2. थ्रेशोल्डिंग (सिर्फ डिज़ाइन का हिस्सा अलग करें, बैकग्राउंड नहीं)
+    # 2. इमेज को ब्लैक एंड व्हाइट (थ्रेशोल्ड) करें
+    # जो डिज़ाइन है वो सफ़ेद (255) हो जाएगा और बैकग्राउंड काला (0)
     _, thresh = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
     
-    # 3. Outline/Contours निकालें (यह वेक्टराइजेशन का काम करता है)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # 4. Pyembroidery पैटर्न शुरू करें
+    # 3. नॉइज़ (छोटे-छोटे धब्बे) साफ़ करें ताकि सुई बार-बार न टूटे
+    kernel = np.ones((3,3), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+    # 4. पैटर्न शुरू करें
     pattern = pyembroidery.EmbPattern()
-    # मशीन के लिए थ्रेड (रंग) सेट करें (डिफ़ॉल्ट रूप से Black)
     pattern.add_thread(pyembroidery.EmbThread(color=0x000000, name='Color 1'))
 
-    # 5. हर कॉन्टूर (डिज़ाइन के हिस्से) के लिए टांके लगाएं
-    for contour in contours:
-        # बहुत छोटे धब्बों को छोड़ दें (जो सिलाई लायक नहीं हैं)
-        if cv2.contourArea(contour) < 50:
-            continue
+    # 5. ज़िगज़ैग (Satin) फिलिंग का लॉजिक
+    # हम हर 3 पिक्सल की दूरी पर ऊपर से नीचे तक स्कैन करेंगे
+    stitch_spacing = 3 
+    
+    for y in range(0, 500, stitch_spacing):
+        row = thresh[y]
+        dark_pixels = np.where(row > 0)[0]
+        
+        if len(dark_pixels) > 0:
+            # डिज़ाइन की शुरुआत और अंत खोजें
+            start_x = dark_pixels[0]
+            end_x = dark_pixels[-1]
             
-        # कॉन्टूर को सिंपलीफाई करें ताकि टांके कम लगें और डिज़ाइन स्मूथ बने
-        epsilon = 0.005 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        
-        # यहाँ हम Running Stitch (सिंगल लाइन) लगा रहे हैं जो कॉन्टूर के चारों ओर घूमेगी
-        for i, point in enumerate(approx):
-            x, y = point[0]
-            if i == 0:
-                # पहला टांका (Jump/Start)
-                pattern.add_stitch_absolute(pyembroidery.STITCH, int(x), int(y))
-            else:
-                # आगे के टांके
-                pattern.add_stitch_absolute(pyembroidery.STITCH, int(x), int(y))
-        
-        # एक कॉन्टूर खत्म होने के बाद सुई उठाएं (Trim/Jump)
-        pattern.add_stitch_absolute(pyembroidery.JUMP, int(x), int(y))
+            # अगर डिज़ाइन की चौड़ाई 3 पिक्सल से ज़्यादा है, तो उसे भरें
+            if end_x - start_x > 3:
+                # ज़िगज़ैग (Satin Stitch) बनाने के लिए आगे-पीछे टांके लगाते हैं
+                pattern.add_stitch_absolute(pyembroidery.STITCH, start_x, y) # बाएं से दाएं
+                pattern.add_stitch_absolute(pyembroidery.STITCH, end_x, y)   # दाएं से बाएं
+                
+                # अगली लाइन पर जाने के लिए सुई उठाएं (Jump)
+                pattern.add_stitch_absolute(pyembroidery.JUMP, start_x, y + stitch_spacing)
 
-    # 6. पैटर्न खत्म करें और .DST फाइल सेव करें (Step 4)
+    # 6. डिज़ाइन खत्म करें और .DST फाइल सेव करें
     pattern.end()
     pyembroidery.write_dst(pattern, dst_path)
     
     return dst_path
+
+
+def _demo_image(prompt):
+    img = Image.new('RGB', (512, 512), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for i in range(0, 512, 20):
+        d.ellipse([i, i, i + 60, i + 60], outline=(255, 215, 0), width=3)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
 
 # ============================================================
 # ROUTES: AUTH
@@ -249,7 +263,7 @@ def dashboard():
 
 
 # ============================================================
-# ROUTES: DOWNLOAD (यह पुराने कोड से जोड़ दिया गया है)
+# ROUTES: DOWNLOAD
 # ============================================================
 @app.route('/download/<int:design_id>/<filetype>')
 @login_required
@@ -317,7 +331,7 @@ def api_generate():
         with open(img_path, 'wb') as f:
             f.write(img_bytes)
 
-        # ---------- CONVERT TO DST ----------
+        # ---------- CONVERT TO DST (Fully Filled) ----------
         dst_name = fname.replace('.png', '.dst')
         dst_path = os.path.join(app.config['UPLOAD_FOLDER'], dst_name)
         try:
@@ -438,6 +452,7 @@ with app.app_context():
         db.session.add(admin)
         db.session.commit()
         print('✅ Default admin: admin / admin123')
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
