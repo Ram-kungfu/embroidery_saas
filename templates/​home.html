@@ -1,1 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="text-center py-16">
+    <span class="bg-amber-500/10 text-amber-400 text-sm font-semibold px-4 py-1.5 rounded-full border border-amber-500/20">
+        सुरत कारखानों के लिए #1 AI टूल
+    </span>
+    <h1 class="text-4xl md:text-5xl font-extrabold mt-6 mb-4 text-amber-300">
+        सेकंडों में बनाएं एम्ब्रॉयडरी डिज़ाइन
+    </h1>
+    <p class="text-gray-400 max-w-2xl mx-auto mb-8 text-lg">
+        AI की मदद से यूनीक फूल, बेल-बूटे, बॉर्डर बनाएं और सीधे मशीन फ़ाइल (.dst / .svg) डाउनलोड करें।
+    </p>
+    <div class="flex justify-center gap-4 flex-wrap">
+        <a href="{{ url_for('generator') }}"
+           class="bg-amber-500 hover:bg-amber-600 text-gray-950 font-bold px-8 py-4 rounded-xl shadow-xl transition transform hover:scale-105">
+            🎨 डिज़ाइन बनाना शुरू करें
+        </a>
+        <a href="{{ url_for('pricing') }}"
+           class="bg-gray-800 hover:bg-gray-700 border border-gray-700 font-bold px-8 py-4 rounded-xl transition">
+            💳 प्लान देखें
+        </a>
+    </div>
+</section>
 
+<section class="grid md:grid-cols-3 gap-6 mt-10">
+    <div class="card">
+        <h3 class="text-xl font-bold text-indigo-400 mb-2">⚡ इंस्टेंट जनरेशन</h3>
+        <p class="text-gray-400 text-sm">AI सेकंडों में यूनीक डिज़ाइन तैयार करता है।</p>
+    </div>
+    <div class="card">
+        <h3 class="text-xl font-bold text-emerald-400 mb-2">🧵 मशीन रेडी .DST</h3>
+        <p class="text-gray-400 text-sm">सीधे एम्ब्रॉयडरी मशीन में फीड करें।</p>
+    </div>
+    <div class="card">
+        <h3 class="text-xl font-bold text-amber-400 mb-2">💎 HD वेक्टर</h3>
+        <p class="text-gray-400 text-sm">प्रो और बिज़नेस प्लान में HD SVG डाउनलोड।</p>
+    </div>
+</section>
+{% endblock %}
