@@ -25,7 +25,9 @@ load_dotenv()
 # ============================================================
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+# पहले यह था: app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+# अब इसे ऐसे कर दें (./ जोड़ दें):
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///./database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join('static', 'generated')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -437,21 +439,27 @@ def admin_approve(pay_id):
         flash(f'{user.username} का {plan["name"]} प्लान एक्टिवेट हो गया!', 'success')
     return redirect(url_for('admin_payments'))
 
-
 # ============================================================
-# BOOTSTRAP DB + ADMIN
+# BOOTSTRAP DB + ADMIN (Render Deployment के लिए 100% सही)
 # ============================================================
 with app.app_context():
-    db.create_all()
-    if not User.query.filter_by(username='admin').first():
-        admin = User(username='admin', email='admin@surat.local', is_admin=True)
-        admin.set_password('admin123')
-        admin.plan = 'business'
-        admin.credits = 9999
-        admin.is_paid_user = True
-        db.session.add(admin)
-        db.session.commit()
-        print('✅ Default admin: admin / admin123')
+    try:
+        db.create_all()
+        # अगर एडमिन पहले से नहीं है, तो उसे बनाएं
+        if not User.query.filter_by(username='admin').first():
+            admin = User(username='admin', email='admin@surat.local', is_admin=True)
+            admin.set_password('admin123')
+            admin.plan = 'business'
+            admin.credits = 9999
+            admin.is_paid_user = True
+            db.session.add(admin)
+            db.session.commit()
+            print('✅ Default admin created: admin / admin123')
+        else:
+            print('✅ Database connected. Admin already exists.')
+    except Exception as e:
+        print(f'❌ Database initialization error: {e}')
+
 
 
 if __name__ == '__main__':
