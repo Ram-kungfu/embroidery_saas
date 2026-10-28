@@ -1,1 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="text-2xl font-bold text-purple-400 mb-6">📁 मेरे डिज़ाइन्स</h2>
 
+{% if designs %}
+<div class="grid md:grid-cols-3 gap-6">
+    {% for d in designs %}
+    <div class="bg-gray-900 rounded-xl overflow-hidden border border-gray-800">
+        <img src="{{ url_for('static', filename='generated/' + d.image_file) }}"
+             class="w-full h-56 object-cover">
+        <div class="p-4">
+            <p class="text-gray-300 text-sm line-clamp-2 mb-3">{{ d.prompt }}</p>
+            <p class="text-xs text-gray-500 mb-3">{{ d.created_at.strftime('%d %b %Y, %H:%M') }}</p>
+            <div class="flex gap-2 flex-wrap">
+                <a href="{{ url_for('download_design', design_id=d.id, filetype='image') }}"
+                   class="text-xs bg-gray-800 px-3 py-1.5 rounded-lg">🖼️ PNG</a>
+                {% if d.dst_file %}
+                <a href="{{ url_for('download_design', design_id=d.id, filetype='dst') }}"
+                   class="text-xs bg-emerald-700 px-3 py-1.5 rounded-lg">🧵 DST</a>
+                {% endif %}
+                {% if d.svg_file %}
+                <a href="{{ url_for('download_design', design_id=d.id, filetype='svg') }}"
+                   class="text-xs bg-amber-700 px-3 py-1.5 rounded-lg">📐 SVG</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="bg-gray-900 p-12 rounded-2xl text-center border border-gray-800">
+    <p class="text-gray-400 mb-4">आपने अभी तक कोई डिज़ाइन नहीं बनाया है।</p>
+    <a href="{{ url_for('generator') }}"
+       class="inline-block bg-indigo-600 hover:bg-indigo-700 px-6 py-3 rounded-xl font-bold">
+        🎨 पहला डिज़ाइन बनाएं
+    </a>
+</div>
+{% endif %}
+{% endblock %}
