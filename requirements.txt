@@ -4,8 +4,9 @@ Flask-SQLAlchemy==3.1.1
 Werkzeug==3.0.1
 replicate==0.25.1
 Pillow==10.2.0
-cairosvg==2.7.1
 pyembroidery==1.4.0
-potrace==0.4.0
 requests==2.31.0
 python-dotenv==1.0.0
+opencv-python-headless==4.9.0.80
+numpy==1.26.4
+gunicorn==21.2.0
