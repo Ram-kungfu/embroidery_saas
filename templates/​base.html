@@ -1,1 +1,57 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Surat AI Embroidery{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="bg-gray-950 text-white font-sans min-h-screen">
 
+<header class="bg-gray-900 border-b border-gray-800 shadow-lg sticky top-0 z-50">
+    <div class="container mx-auto flex justify-between items-center p-4 flex-wrap gap-2">
+        <a href="{{ url_for('home') }}" class="text-xl font-bold text-amber-400">🧵 Surat AI Embroidery</a>
+
+        {% if current_user.is_authenticated %}
+        <nav class="flex items-center gap-2 flex-wrap">
+            <a href="{{ url_for('home') }}" class="btn-nav">होम</a>
+            <a href="{{ url_for('generator') }}" class="btn-nav bg-indigo-600 hover:bg-indigo-700">🎨 डिज़ाइन स्टूडियो</a>
+            <a href="{{ url_for('dashboard') }}" class="btn-nav bg-purple-600 hover:bg-purple-700">📁 मेरे डिज़ाइन</a>
+            <a href="{{ url_for('pricing') }}" class="btn-nav bg-emerald-600 hover:bg-emerald-700">💳 प्लान्स</a>
+            <span class="bg-gray-800 px-3 py-1.5 rounded-lg text-sm border border-gray-700">
+                क्रेडिट: <b class="text-emerald-400" id="navCredits">{{ current_user.credits }}</b>
+            </span>
+            <a href="{{ url_for('logout') }}" class="btn-nav bg-red-600 hover:bg-red-700">लॉगआउट</a>
+        </nav>
+        {% endif %}
+    </div>
+</header>
+
+{% with msgs = get_flashed_messages(with_categories=true) %}
+{% if msgs %}
+<div class="container mx-auto px-4 pt-4">
+    {% for cat, msg in msgs %}
+    <div class="p-3 mb-2 rounded-lg
+        {% if cat == 'error' %}bg-red-600/20 border border-red-600
+        {% elif cat == 'success' %}bg-emerald-600/20 border border-emerald-600
+        {% else %}bg-blue-600/20 border border-blue-600{% endif %}">
+        {{ msg }}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endwith %}
+
+<main class="container mx-auto p-4 md:p-6 max-w-6xl">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="text-center text-gray-600 text-sm py-6 mt-10 border-t border-gray-900">
+    © 2025 Surat AI Embroidery SaaS — Made with ❤️ for Surat Textile Market
+</footer>
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
