@@ -1,1 +1,19 @@
-
+{% extends "base.html" %}
+{% block title %}रजिस्टर{% endblock %}
+{% block content %}
+<div class="max-w-md mx-auto mt-16 bg-gray-900 p-8 rounded-2xl border border-gray-800 shadow-2xl">
+    <h2 class="text-3xl font-bold text-emerald-400 mb-2 text-center">नया खाता बनाएं</h2>
+    <p class="text-gray-400 text-center mb-6">10 फ्री क्रेडिट्स पाएं 🎁</p>
+    <form method="POST" class="space-y-4">
+        <input type="text" name="username" required placeholder="यूज़रनेम" class="input">
+        <input type="email" name="email" required placeholder="ईमेल" class="input">
+        <input type="password" name="password" required placeholder="पासवर्ड" class="input">
+        <button class="w-full bg-emerald-500 hover:bg-emerald-600 text-gray-950 font-bold py-3 rounded-xl">
+            रजिस्टर
+        </button>
+    </form>
+    <p class="text-center text-gray-400 mt-4">
+        पहले से खाता है? <a href="{{ url_for('login') }}" class="text-amber-400 underline">लॉगिन</a>
+    </p>
+</div>
+{% endblock %}
