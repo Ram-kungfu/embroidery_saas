@@ -471,7 +471,11 @@ with app.app_context():
             print('✅ Default admin created: admin / admin123')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
-      import traceback
+
+
+# ============================================================
+# TEMPORARY DEBUG: 500 एरर पेज पर दिखाने के लिए (काम होने पर हटा दें)
+# ============================================================
 @app.errorhandler(500)
 def show_error(e):
     import traceback
@@ -481,4 +485,3 @@ def show_error(e):
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
