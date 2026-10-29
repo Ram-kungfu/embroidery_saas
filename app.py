@@ -434,6 +434,8 @@ HF_TOKEN = (os.getenv('HF_TOKEN') or os.getenv('HF_API_KEY') or os.getenv('HUGGI
             or os.getenv('HUGGING_FACE_API_KEY') or os.getenv('HUGGINGFACE_TOKEN') or '').strip()
 OPENAI_IMAGE_MODEL = (os.getenv('OPENAI_IMAGE_MODEL') or 'gpt-image-1').strip()
 HF_IMAGE_MODEL = (os.getenv('HF_IMAGE_MODEL') or 'black-forest-labs/FLUX.1-schnell').strip()
+HF_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
+
 
 
 def _to_png(raw_bytes):
