@@ -71,6 +71,9 @@ async function generateDesign() {
         document.getElementById('downloadImgBtn').setAttribute('download', 'design.png');
         document.getElementById('downloadDstBtn').href = '/download/' + data.design_id + '/dst';
         document.getElementById('downloadSvgBtn').href = '/download/' + data.design_id + '/svg';
+        document.getElementById('downloadDstBtn').style.display = data.dst_ready ? '' : 'none';
+        document.getElementById('downloadSvgBtn').style.display = data.svg_url ? '' : 'none';
+        if (!data.dst_ready) { alert(data.message); }
         document.getElementById('creditCount').innerText = data.remaining_credits;
         const nc = document.getElementById('navCredits');
         if (nc) nc.innerText = data.remaining_credits;
