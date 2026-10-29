@@ -434,8 +434,6 @@ HF_TOKEN = (os.getenv('HF_TOKEN') or os.getenv('HF_API_KEY') or os.getenv('HUGGI
             or os.getenv('HUGGING_FACE_API_KEY') or os.getenv('HUGGINGFACE_TOKEN') or '').strip()
 OPENAI_IMAGE_MODEL = (os.getenv('OPENAI_IMAGE_MODEL') or 'gpt-image-1').strip()
 HF_IMAGE_MODEL = (os.getenv('HF_IMAGE_MODEL') or 'black-forest-labs/FLUX.1-schnell').strip()
-HF_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
-
 
 
 def _to_png(raw_bytes):
@@ -481,15 +479,14 @@ def _ai_openai(prompt):
         return requests.get(item['url'], timeout=90).content
     raise RuntimeError('OpenAI से इमेज नहीं मिली')
 
+
 def _ai_huggingface(prompt):
-    API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    r = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=180)
+    r = requests.post(f'https://router.huggingface.co/hf-inference/models/{HF_IMAGE_MODEL}',
+                      headers={'Authorization': f'Bearer {HF_TOKEN}'},
+                      json={'inputs': prompt}, timeout=180)
     if r.status_code != 200:
         raise RuntimeError(f'HTTP {r.status_code}: {r.text[:400]}')
     return r.content
-
-
 
 
 def generate_ai_image(prompt):
