@@ -548,22 +548,82 @@ def api_generate():
     )
 
     try:
-        # ---------- AI GENERATION ----------
+        # ============================================================
+        # स्मार्ट AI फ़ॉलबैक (Replicate -> OpenAI -> Hugging Face)
+        # ============================================================
+        img_bytes = None
+        error_logs = []
+
+        # 1. पहले Replicate ट्राई करें
         if REPLICATE_TOKEN:
-            output = replicate.run(
-                "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-                input={
-                    "prompt": enhanced,
-                    "width": 1024,
-                    "height": 1024,
-                    "num_outputs": 1,
-                    "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines",
-                    "scheduler": "DPMSolverMultistep"
-                }
-            )
-            img_url = output[0] if isinstance(output, list) else str(output)
-            img_bytes = requests.get(img_url, timeout=90).content
-        else:
+            try:
+                print("Trying Replicate AI...")
+                output = replicate.run(
+                    "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+                    input={
+                        "prompt": enhanced,
+                        "width": 1024,
+                        "height": 1024,
+                        "num_outputs": 1,
+                        "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines",
+                        "scheduler": "DPMSolverMultistep"
+                    }
+                )
+                img_url = output[0] if isinstance(output, list) else str(output)
+                img_bytes = requests.get(img_url, timeout=90).content
+                print("✅ Replicate Success")
+            except Exception as e:
+                print(f"❌ Replicate Failed: {e}")
+                error_logs.append(f"Replicate: {e}")
+
+        # 2. अगर Replicate फेल हो, तो OpenAI (ChatGPT) ट्राई करें
+        if not img_bytes:
+            OPENAI_KEY = os.getenv('OPENAI_API_KEY', '')
+            if OPENAI_KEY:
+                try:
+                    print("Trying OpenAI DALL-E...")
+                    headers = {
+                        "Authorization": f"Bearer {OPENAI_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {
+                        "model": "dall-e-3",
+                        "prompt": enhanced,
+                        "n": 1,
+                        "size": "1024x1024",
+                        "response_format": "url"
+                    }
+                    res = requests.post("https://api.openai.com/v1/images/generations", 
+                                        headers=headers, json=payload, timeout=90)
+                    res.raise_for_status()
+                    img_url = res.json()['data'][0]['url']
+                    img_bytes = requests.get(img_url, timeout=90).content
+                    print("✅ OpenAI Success")
+                except Exception as e:
+                    print(f"❌ OpenAI Failed: {e}")
+                    error_logs.append(f"OpenAI: {e}")
+
+        # 3. अगर दोनों फेल हो, तो Hugging Face ट्राई करें
+        if not img_bytes:
+            HF_TOKEN = os.getenv('HUGGINGFACE_API_KEY', '')
+            if HF_TOKEN:
+                try:
+                    print("Trying Hugging Face...")
+                    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+                    # Hugging Face Flux मॉडल का इस्तेमाल
+                    payload = {"inputs": enhanced}
+                    res = requests.post("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", 
+                                        headers=headers, json=payload, timeout=90)
+                    res.raise_for_status()
+                    img_bytes = res.content
+                    print("✅ Hugging Face Success")
+                except Exception as e:
+                    print(f"❌ Hugging Face Failed: {e}")
+                    error_logs.append(f"HuggingFace: {e}")
+
+        # 4. अगर तीनों फेल हो जाएं, तो डेमो इमेज बनाएं
+        if not img_bytes:
+            print("⚠️ All AI failed. Using Demo Image.")
             img_bytes = _demo_image(enhanced)
 
         # ---------- SAVE IMAGE ----------
