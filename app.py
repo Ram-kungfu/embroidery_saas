@@ -471,6 +471,14 @@ with app.app_context():
             print('✅ Default admin created: admin / admin123')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
+@app.route('/debug-files')
+def debug_files():
+    t = os.path.join(base_dir, 'templates')
+    out = "BASE: " + base_dir + "\n" + repr(os.listdir(base_dir))
+    out += "\n\ntemplates फोल्डर मौजूद: " + str(os.path.isdir(t))
+    if os.path.isdir(t):
+        out += "\n" + repr(os.listdir(t))
+    return "<pre>" + out + "</pre>"
 
 
 # ============================================================
