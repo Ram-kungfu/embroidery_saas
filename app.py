@@ -47,7 +47,7 @@ app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'), stati
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
 
 # डेटाबेस URL सेट करना (Render PostgreSQL के लिए)
-db_url = os.getenv('DATABASE_URL', 'sqlite:///./database.db')
+db_url = os.getenv('DATABASE_URL', 'sqlite:///./database.db').strip()
 
 # यहाँ सुधार किया गया है (सिर्फ postgresql:// रखा है ताकि psycopg2 सही से काम करे)
 if db_url.startswith("postgres://"):
