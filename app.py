@@ -2,6 +2,8 @@ import os
 import io
 import uuid
 import secrets
+import base64
+import traceback
 import requests
 from datetime import datetime
 from functools import wraps
@@ -166,6 +168,7 @@ def _design_mask(image_path):
     """
     इमेज से सिलने वाला हिस्सा (सफ़ेद=255) निकालता है।
     बैकग्राउंड काला हो या सफ़ेद, अपने आप पहचान लेता है।
+    नतीजा असली साइज़ में होता है: 1 पिक्सल = 0.1 mm।
     """
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -177,23 +180,19 @@ def _design_mask(image_path):
         img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
     img = cv2.GaussianBlur(img, (5, 5), 0)
 
-    # 1. अपने आप सही थ्रेशोल्ड (Otsu)
+    # अपने आप सही थ्रेशोल्ड (Otsu): चमकीला हिस्सा = 255
     _, mask = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 2. बैकग्राउंड पहचानें (अगर बैकग्राउंड सफ़ेद है, तो उल्टा करें)
+    # किनारे की पट्टी से बैकग्राउंड पहचानें; बैकग्राउंड सफ़ेद हो तो उल्टा करें
     border = np.concatenate([mask[0, :], mask[-1, :], mask[:, 0], mask[:, -1]])
     if border.mean() > 127:
         mask = cv2.bitwise_not(mask)
-
-    # 3. अगर डिज़ाइन सिर्फ एक पतली लाइन (Outline) है, तो उसे मोटा करें ताकि सिलाई हो सके
-    kernel_thick = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.dilate(mask, kernel_thick, iterations=1)
 
     ys, xs = np.where(mask > 0)
     if len(xs) == 0:
         raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
 
-    # 4. क्रॉपिंग और असली साइज़ (mm) में बदलना
+    # डिज़ाइन के चारों ओर की खाली जगह काटें, फिर असली साइज़ (mm) में लाएँ
     mask = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
     ch, cw = mask.shape
     s = (DESIGN_SIZE_MM * 10.0) / max(ch, cw)
@@ -201,13 +200,15 @@ def _design_mask(image_path):
                       interpolation=cv2.INTER_LINEAR)
     _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
 
-    # 5. बहुत छोटे धब्बों को हटाना (नॉइज़ क्लीनिंग)
+    # 0.7 mm से पतली चीज़ें (जो साफ़ सिली नहीं जा सकतीं) और छोटे धब्बे हटाएँ
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask = cv2.copyMakeBorder(mask, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=0)   # किनारे की पतली चीज़ें भी हटें
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)[8:-8, 8:-8]
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     clean = np.zeros_like(mask)
     for i in range(1, n):
         if stats[i, cv2.CC_STAT_AREA] >= MIN_AREA:
             clean[labels == i] = 255
-            
     if not clean.any():
         raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
     return clean
@@ -295,6 +296,10 @@ class _Sewer:
         X, Y = self._pos(self.x, self.y)
         self.p.add_stitch_absolute(pyembroidery.TRIM, X, Y)
 
+    def end(self):
+        X, Y = self._pos(self.x, self.y)
+        self.p.add_stitch_absolute(pyembroidery.END, X, Y)
+
     def lock(self, x, y, sign):
         # 4 छोटे टाँके (0.3 mm) ताकि धागा खुले नहीं
         for dx in (3, 0, 3, 0):
@@ -322,21 +327,21 @@ class _Sewer:
 
 def image_to_dst(image_path, dst_path):
     """
-    AI इमेज के डिज़ाइन वाले हिस्से को ही भरता है (Outline हो या Solid),
-    असली साइज़ में, 0.4 mm घनत्व के साथ।
+    AI इमेज के डिज़ाइन वाले हिस्से को ही भरता है (खाली जगह नहीं),
+    असली साइज़ में, 0.4 mm घनत्व, 3.5 mm तक के टाँके, लॉक-स्टिच और ट्रिम के साथ।
     """
-    try:
-        mask = _design_mask(image_path)
-    except Exception as e:
-        raise ValueError(f"Masking failed: {e}")
-        
+    mask = _design_mask(image_path)
     h, w = mask.shape
 
     pattern = pyembroidery.EmbPattern()
-    pattern.add_thread(pyembroidery.EmbThread(color=0x000000, name='Color 1'))
-    sew = _Sewer(pattern, w // 2, h // 2)
+    thread = pyembroidery.EmbThread()
+    thread.set_color(0, 0, 0)               # काला धागा
+    pattern.add_thread(thread)
+    sew = _Sewer(pattern, w // 2, h // 2)   # डिज़ाइन का केंद्र = मशीन का केंद्र
+    # किनारे पर 0.2 mm की छूट के साथ "अंदर" की जाँच (किनारे के पिक्सल पर जोड़ फेल न हो)
     loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
 
+    # हर अलग आकार की अपनी लाइनें
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     jobs = []
     for i in range(1, n):
@@ -348,16 +353,16 @@ def image_to_dst(image_path, dst_path):
             lines = []
             for k, (a, b, yy, idx) in enumerate(chain):
                 if k % 2 == 0:
-                    lines.append((a + x, b + x, yy + y, idx))
+                    lines.append((a + x, b + x, yy + y, idx))   # बाएँ → दाएँ
                 else:
-                    lines.append((b + x, a + x, yy + y, idx))
+                    lines.append((b + x, a + x, yy + y, idx))   # दाएँ → बाएँ
             jobs.append(lines)
-            
     if not jobs:
-        raise ValueError("इमेज में सिलने लायक कोई लाइन नहीं मिली")
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
 
     cur = (w // 2, h // 2)
     while jobs:
+        # सबसे पास वाला आकार पहले (कम से कम जंप)
         j = min(range(len(jobs)),
                 key=lambda k: (jobs[k][0][0] - cur[0]) ** 2 + (jobs[k][0][2] - cur[1]) ** 2)
         lines = jobs.pop(j)
@@ -367,17 +372,14 @@ def image_to_dst(image_path, dst_path):
         for (xs, xe, y, idx) in lines:
             sign = 1 if xe >= xs else -1
             near = ((xs - sew.x) ** 2 + (y - sew.y) ** 2) ** 0.5 <= MAX_CONNECT
-            
             if (not first) and near and _inside(loose, sew.x, sew.y, xs, y):
-                sew.connect(xs, y)
+                sew.connect(xs, y)                    # अंदर ही अंदर जुड़ें, धागा नहीं कटेगा
             else:
                 if not first:
-                    sew.lock(sew.x, sew.y, -prev_sign)
-                    sew.trim()
+                    sew.lock(sew.x, sew.y, -prev_sign)  # पिछली लाइन पर लॉक
+                    sew.trim()                          # धागा काटें
                 sew.jump(xs, y)
-                sew.lock(xs, y, sign)
-                
-            # यहाँ टांके लगाएं
+                sew.lock(xs, y, sign)                   # नई लाइन की शुरुआत पर लॉक
             sew.sew_line(xs, xe, y, (idx % 3) * (FILL_STITCH_LEN // 3))
             prev_sign = sign
             first = False
@@ -386,8 +388,8 @@ def image_to_dst(image_path, dst_path):
         sew.trim()
         cur = (sew.x, sew.y)
 
-    pattern.end()
-    pyembroidery.write_dst(pattern, dst_path)
+    sew.end()
+    pyembroidery.write(pattern, dst_path)   # फाइल के .dst नाम से DST फॉर्मेट अपने आप चुनता है
     return dst_path
 
 
@@ -420,6 +422,89 @@ def _demo_image(prompt):
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     return buf.getvalue()
+
+
+# ============================================================
+# AI इमेज बनाने के तरीके: पहले Replicate → फिर OpenAI → फिर Hugging Face
+# (Render Environment में इन नामों से Key डालें)
+#   REPLICATE_API_TOKEN, OPENAI_API_KEY, HF_TOKEN
+# ============================================================
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
+HF_TOKEN = (os.getenv('HF_TOKEN') or os.getenv('HF_API_KEY') or os.getenv('HUGGINGFACE_API_KEY')
+            or os.getenv('HUGGING_FACE_API_KEY') or os.getenv('HUGGINGFACE_TOKEN') or '').strip()
+OPENAI_IMAGE_MODEL = (os.getenv('OPENAI_IMAGE_MODEL') or 'gpt-image-1').strip()
+HF_IMAGE_MODEL = (os.getenv('HF_IMAGE_MODEL') or 'black-forest-labs/FLUX.1-schnell').strip()
+
+
+def _to_png(raw_bytes):
+    """कोई भी इमेज (PNG/JPG/WEBP) जाँचकर PNG बाइट्स में बदलता है। इमेज न हो तो एरर।"""
+    img = Image.open(io.BytesIO(raw_bytes)).convert('RGB')
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def _ai_replicate(prompt):
+    output = replicate.run(
+        "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+        input={
+            "prompt": prompt,
+            "width": 1024,
+            "height": 1024,
+            "num_outputs": 1,
+            "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines",
+            "scheduler": "DPMSolverMultistep"
+        }
+    )
+    img_url = output[0] if isinstance(output, list) else str(output)
+    return requests.get(str(img_url), timeout=90).content
+
+
+def _ai_openai(prompt):
+    payload = {'model': OPENAI_IMAGE_MODEL, 'prompt': prompt, 'size': '1024x1024', 'n': 1}
+    if OPENAI_IMAGE_MODEL.startswith('dall-e'):
+        payload['response_format'] = 'b64_json'     # पुराने DALL·E मॉडल के लिए
+    else:
+        payload['quality'] = 'medium'               # gpt-image मॉडल हमेशा base64 लौटाते हैं
+    r = requests.post('https://api.openai.com/v1/images/generations',
+                      headers={'Authorization': f'Bearer {OPENAI_API_KEY}',
+                               'Content-Type': 'application/json'},
+                      json=payload, timeout=180)
+    if r.status_code != 200:
+        raise RuntimeError(f'HTTP {r.status_code}: {r.text[:400]}')   # असली वजह लॉग में दिखेगी
+    item = r.json()['data'][0]
+    if item.get('b64_json'):
+        return base64.b64decode(item['b64_json'])
+    if item.get('url'):
+        return requests.get(item['url'], timeout=90).content
+    raise RuntimeError('OpenAI से इमेज नहीं मिली')
+
+
+def _ai_huggingface(prompt):
+    r = requests.post(f'https://router.huggingface.co/hf-inference/models/{HF_IMAGE_MODEL}',
+                      headers={'Authorization': f'Bearer {HF_TOKEN}'},
+                      json={'inputs': prompt}, timeout=180)
+    if r.status_code != 200:
+        raise RuntimeError(f'HTTP {r.status_code}: {r.text[:400]}')
+    return r.content
+
+
+def generate_ai_image(prompt):
+    """Replicate → OpenAI → Hugging Face. पहला जो चले उसकी PNG इमेज (bytes) लौटाता है, वरना None।"""
+    for name, fn, key in (('Replicate', _ai_replicate, REPLICATE_TOKEN),
+                          ('OpenAI', _ai_openai, OPENAI_API_KEY),
+                          ('Hugging Face', _ai_huggingface, HF_TOKEN)):
+        if not key:
+            print(f'⏭️ {name}: Key सेट नहीं है, छोड़ दिया')
+            continue
+        try:
+            print(f'Trying {name}...')
+            data = _to_png(fn(prompt))
+            print(f'✅ {name} से इमेज बन गई')
+            return data
+        except Exception as e:
+            print(f'❌ {name} Failed: {e}')
+    return None
 
 
 # ============================================================
@@ -546,91 +631,22 @@ def api_generate():
     if not prompt:
         return jsonify({'status': 'error', 'message': 'कृपया पहले प्रॉम्प्ट लिखें!'}), 400
 
-    # ⚡ AI Prompt सुधार: हर बार नया डिज़ाइन बनेगा
     enhanced = (
-        f"{prompt}, highly detailed unique intricate {uuid.uuid4().hex[:4]}, "
-        f"solid filled embroidery vector design, thick bold shapes, "
-        f"plain pure white background, no background elements, "
-        f"no shading, no gradients, no texture, no text, "
-        f"clean thick edges, centered, modern, creative"
+        f"{prompt}, flat 2D embroidery design, bold solid shapes, "
+        f"black design on plain white background, high contrast, "
+        f"no shading, no gradient, no texture, no text, "
+        f"thick clean outlines, simple, centered, vector style"
     )
 
     try:
-        # ============================================================
-        # स्मार्ट AI फ़ॉलबैक (Replicate -> OpenAI -> Hugging Face)
-        # ============================================================
-        img_bytes = None
-        error_logs = []
-
-        # 1. पहले Replicate ट्राई करें
-        if REPLICATE_TOKEN:
-            try:
-                print("Trying Replicate AI...")
-                output = replicate.run(
-                    "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-                    input={
-                        "prompt": enhanced,
-                        "width": 1024,
-                        "height": 1024,
-                        "num_outputs": 1,
-                        "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines, black background",
-                        "scheduler": "DPMSolverMultistep"
-                    }
-                )
-                img_url = output[0] if isinstance(output, list) else str(output)
-                img_bytes = requests.get(img_url, timeout=90).content
-                print("✅ Replicate Success")
-            except Exception as e:
-                print(f"❌ Replicate Failed: {e}")
-                error_logs.append(f"Replicate: {e}")
-
-        # 2. अगर Replicate फेल हो, तो OpenAI (ChatGPT) ट्राई करें
-        if not img_bytes:
-            OPENAI_KEY = os.getenv('OPENAI_API_KEY', '')
-            if OPENAI_KEY:
-                try:
-                    print("Trying OpenAI DALL-E...")
-                    headers = {
-                        "Authorization": f"Bearer {OPENAI_KEY}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "model": "dall-e-3",
-                        "prompt": enhanced,
-                        "n": 1,
-                        "size": "1024x1024",
-                        "response_format": "url"
-                    }
-                    res = requests.post("https://api.openai.com/v1/images/generations", 
-                                        headers=headers, json=payload, timeout=90)
-                    res.raise_for_status()
-                    img_url = res.json()['data'][0]['url']
-                    img_bytes = requests.get(img_url, timeout=90).content
-                    print("✅ OpenAI Success")
-                except Exception as e:
-                    print(f"❌ OpenAI Failed: {e}")
-                    error_logs.append(f"OpenAI: {e}")
-
-        # 3. अगर दोनों फेल हो, तो Hugging Face ट्राई करें
-        if not img_bytes:
-            HF_TOKEN = os.getenv('HUGGINGFACE_API_KEY', '')
-            if HF_TOKEN:
-                try:
-                    print("Trying Hugging Face...")
-                    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-                    payload = {"inputs": enhanced}
-                    res = requests.post("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", 
-                                        headers=headers, json=payload, timeout=90)
-                    res.raise_for_status()
-                    img_bytes = res.content
-                    print("✅ Hugging Face Success")
-                except Exception as e:
-                    print(f"❌ Hugging Face Failed: {e}")
-                    error_logs.append(f"HuggingFace: {e}")
-
-        # 4. अगर तीनों फेल हो जाएं, तो डेमो इमेज बनाएं
-        if not img_bytes:
-            print("⚠️ All AI failed. Using Demo Image.")
+        # ---------- AI GENERATION (Replicate → OpenAI → Hugging Face) ----------
+        if REPLICATE_TOKEN or OPENAI_API_KEY or HF_TOKEN:
+            img_bytes = generate_ai_image(enhanced)
+            if img_bytes is None:
+                return jsonify({'status': 'error',
+                                'message': 'अभी कोई भी AI सेवा काम नहीं कर रही (क्रेडिट/सेटिंग की दिक्कत)। '
+                                           'कृपया थोड़ी देर बाद कोशिश करें। आपका क्रेडिट नहीं कटा।'}), 503
+        else:
             img_bytes = _demo_image(enhanced)
 
         # ---------- SAVE IMAGE ----------
@@ -646,6 +662,7 @@ def api_generate():
             image_to_dst(img_path, dst_path)
         except Exception as e:
             print('DST conversion failed:', e)
+            traceback.print_exc()
             dst_name = None
 
         # ---------- SVG (असली वेक्टर) ----------
@@ -655,6 +672,7 @@ def api_generate():
             image_to_svg(img_path, svg_path)
         except Exception as e:
             print('SVG conversion failed:', e)
+            traceback.print_exc()
             svg_name = None
 
         # ---------- SAVE TO DB ----------
