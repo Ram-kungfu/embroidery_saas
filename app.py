@@ -1,6 +1,7 @@
 import os
 import io
 import uuid
+import secrets
 import requests
 from datetime import datetime
 from functools import wraps
@@ -145,60 +146,264 @@ def load_user(user_id):
 
 
 # ============================================================
-# HELPER: AI IMAGE → FULLY FILLED MACHINE .DST CONVERTER
+# HELPER: AI IMAGE → मशीन-रेडी .DST (सुरक्षित फिल) + असली वेक्टर SVG
 # ============================================================
-def image_to_dst(image_path, dst_path):
+# DST में 1 unit = 0.1 mm
+try:
+    DESIGN_SIZE_MM = max(10.0, min(300.0, float(os.getenv('DESIGN_SIZE_MM', '100'))))
+except ValueError:
+    DESIGN_SIZE_MM = 100.0      # डिज़ाइन की सबसे लंबी साइड (mm) - Render Environment से बदल सकते हैं
+
+FILL_SPACING    = 4        # लाइनों के बीच की दूरी = 0.4 mm
+FILL_STITCH_LEN = 35       # एक टाँका = 3.5 mm
+MIN_RUN         = 4        # 0.4 mm से छोटी लाइन नहीं सिली जाती
+MIN_AREA        = 150      # 1.5 mm² से छोटे धब्बे हटा दिए जाते हैं
+MAX_CONNECT     = 60       # डिज़ाइन के अंदर ही जोड़ने की अधिकतम दूरी = 6 mm
+MAX_STITCHES    = 100000   # इससे ज़्यादा टाँके = डिज़ाइन बहुत भारी
+
+
+def _design_mask(image_path):
     """
-    यह फंक्शन इमेज के हर काले हिस्से (डिज़ाइन) को ज़िगज़ैग (Satin Stitch) 
-    से पूरा भरता है, जिससे मशीन पूरा फूल/पत्ती/बॉर्डर बनाती है।
+    इमेज से सिलने वाला हिस्सा (सफ़ेद=255) निकालता है।
+    बैकग्राउंड काला हो या सफ़ेद, अपने आप पहचान लेता है।
+    नतीजा असली साइज़ में होता है: 1 पिक्सल = 0.1 mm।
     """
-    # 1. इमेज लोड करें (ब्लैक एंड व्हाइट)
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError("इमेज लोड नहीं हो पाई!")
-    
-    # मशीन के हूप के हिसाब से 500x500 में रीसाइज करें
-    img = cv2.resize(img, (500, 500))
-    
-    # 2. इमेज को ब्लैक एंड व्हाइट (थ्रेशोल्ड) करें
-    # जो डिज़ाइन है वो सफ़ेद (255) हो जाएगा और बैकग्राउंड काला (0)
-    _, thresh = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
-    
-    # 3. नॉइज़ (छोटे-छोटे धब्बे) साफ़ करें ताकि सुई बार-बार न टूटे
-    kernel = np.ones((3,3), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
-    # 4. पैटर्न शुरू करें
+    h, w = img.shape
+    k = 1024.0 / max(h, w)
+    if k < 1:
+        img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+    img = cv2.GaussianBlur(img, (5, 5), 0)
+
+    # अपने आप सही थ्रेशोल्ड (Otsu): चमकीला हिस्सा = 255
+    _, mask = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # किनारे की पट्टी से बैकग्राउंड पहचानें; बैकग्राउंड सफ़ेद हो तो उल्टा करें
+    border = np.concatenate([mask[0, :], mask[-1, :], mask[:, 0], mask[:, -1]])
+    if border.mean() > 127:
+        mask = cv2.bitwise_not(mask)
+
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
+
+    # डिज़ाइन के चारों ओर की खाली जगह काटें, फिर असली साइज़ (mm) में लाएँ
+    mask = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    ch, cw = mask.shape
+    s = (DESIGN_SIZE_MM * 10.0) / max(ch, cw)
+    mask = cv2.resize(mask, (max(1, int(round(cw * s))), max(1, int(round(ch * s)))),
+                      interpolation=cv2.INTER_LINEAR)
+    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
+    # 0.7 mm से पतली चीज़ें (जो साफ़ सिली नहीं जा सकतीं) और छोटे धब्बे हटाएँ
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask = cv2.copyMakeBorder(mask, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=0)   # किनारे की पतली चीज़ें भी हटें
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)[8:-8, 8:-8]
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    clean = np.zeros_like(mask)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= MIN_AREA:
+            clean[labels == i] = 255
+    if not clean.any():
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
+    return clean
+
+
+def _row_runs(row):
+    """एक पंक्ति में लगातार सफ़ेद हिस्सों की (शुरू, अंत) सूची।"""
+    padded = np.concatenate(([0], (row > 0).astype(np.int8), [0]))
+    d = np.diff(padded)
+    starts = np.where(d == 1)[0]
+    ends = np.where(d == -1)[0] - 1
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
+def _inside(mask, x0, y0, x1, y1):
+    """क्या दो बिंदुओं के बीच की सीधी लाइन पूरी तरह डिज़ाइन के अंदर है?"""
+    n = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+    xs = np.linspace(x0, x1, n).round().astype(int)
+    ys = np.linspace(y0, y1, n).round().astype(int)
+    h, w = mask.shape
+    if xs.min() < 0 or ys.min() < 0 or xs.max() >= w or ys.max() >= h:
+        return False
+    return bool(np.all(mask[ys, xs] > 0))
+
+
+def _component_chains(cm):
+    """
+    आकार को "पट्टियों" (chains) में बाँटता है: हर पट्टी में लगातार पंक्तियाँ जो ऊपर-नीचे जुड़ी हैं।
+    इससे छेद या खाली जगह के आर-पार धागा नहीं जाता और ट्रिम कम लगते हैं।
+    हर पंक्ति: (बायाँ_x, दायाँ_x, y, पंक्ति_नंबर)
+    """
+    ys, _ = np.where(cm > 0)
+    top, bot = int(ys.min()), int(ys.max())
+    chains = []
+    active = []
+    for idx, y in enumerate(range(top, bot + 1, FILL_SPACING)):
+        runs = [(a, b) for a, b in _row_runs(cm[y]) if b - a >= MIN_RUN]
+        new_active = []
+        used = set()
+        for a, b in runs:
+            home = None
+            for ci in active:
+                last = chains[ci][-1]
+                if ci not in used and last[3] == idx - 1 and last[0] <= b and a <= last[1]:
+                    home = ci
+                    break
+            if home is None:
+                chains.append([])
+                home = len(chains) - 1
+            used.add(home)
+            chains[home].append((a, b, y, idx))
+            new_active.append(home)
+        active = new_active
+    return chains
+
+
+class _Sewer:
+    """टाँके लगाने वाला सहायक: लॉक-स्टिच, ट्रिम, छोटे टाँके, गिनती।"""
+
+    def __init__(self, pattern, cx, cy):
+        self.p = pattern
+        self.cx = cx
+        self.cy = cy
+        self.count = 0
+        self.x = cx
+        self.y = cy
+
+    def _pos(self, x, y):
+        return int(round(x - self.cx)), int(round(y - self.cy))
+
+    def stitch(self, x, y):
+        X, Y = self._pos(x, y)
+        self.p.add_stitch_absolute(pyembroidery.STITCH, X, Y)
+        self.x, self.y = x, y
+        self.count += 1
+        if self.count > MAX_STITCHES:
+            raise ValueError("डिज़ाइन बहुत भारी/जटिल है, कृपया सरल प्रॉम्प्ट लिखें।")
+
+    def jump(self, x, y):
+        X, Y = self._pos(x, y)
+        self.p.add_stitch_absolute(pyembroidery.JUMP, X, Y)
+        self.x, self.y = x, y
+
+    def trim(self):
+        X, Y = self._pos(self.x, self.y)
+        self.p.add_stitch_absolute(pyembroidery.TRIM, X, Y)
+
+    def lock(self, x, y, sign):
+        # 4 छोटे टाँके (0.3 mm) ताकि धागा खुले नहीं
+        for dx in (3, 0, 3, 0):
+            self.stitch(x + sign * dx, y)
+
+    def connect(self, x, y):
+        # डिज़ाइन के अंदर ही अगली लाइन तक छोटे टाँकों से जाएँ
+        dx, dy = x - self.x, y - self.y
+        dist = (dx * dx + dy * dy) ** 0.5
+        steps = max(1, int(np.ceil(dist / FILL_STITCH_LEN)))
+        x0, y0 = self.x, self.y
+        for i in range(1, steps + 1):
+            self.stitch(x0 + dx * i / steps, y0 + dy * i / steps)
+
+    def sew_line(self, xs, xe, y, offset):
+        # हर पंक्ति में सुई की जगह थोड़ी खिसकाते हैं ताकि फिल में लकीरें न बनें
+        length = abs(xe - xs)
+        d = 1 if xe >= xs else -1
+        pos = offset if offset > 0 else FILL_STITCH_LEN
+        while pos < length - 8:
+            self.stitch(xs + d * pos, y)
+            pos += FILL_STITCH_LEN
+        self.stitch(xe, y)
+
+
+def image_to_dst(image_path, dst_path):
+    """
+    AI इमेज के डिज़ाइन वाले हिस्से को ही भरता है (खाली जगह नहीं),
+    असली साइज़ में, 0.4 mm घनत्व, 3.5 mm तक के टाँके, लॉक-स्टिच और ट्रिम के साथ।
+    """
+    mask = _design_mask(image_path)
+    h, w = mask.shape
+
     pattern = pyembroidery.EmbPattern()
     pattern.add_thread(pyembroidery.EmbThread(color=0x000000, name='Color 1'))
+    sew = _Sewer(pattern, w // 2, h // 2)   # डिज़ाइन का केंद्र = मशीन का केंद्र
+    # किनारे पर 0.2 mm की छूट के साथ "अंदर" की जाँच (किनारे के पिक्सल पर जोड़ फेल न हो)
+    loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
 
-    # 5. ज़िगज़ैग (Satin) फिलिंग का लॉजिक
-    # हम हर 3 पिक्सल की दूरी पर ऊपर से नीचे तक स्कैन करेंगे
-    stitch_spacing = 3 
-    
-    for y in range(0, 500, stitch_spacing):
-        row = thresh[y]
-        dark_pixels = np.where(row > 0)[0]
-        
-        if len(dark_pixels) > 0:
-            # डिज़ाइन की शुरुआत और अंत खोजें
-            start_x = dark_pixels[0]
-            end_x = dark_pixels[-1]
-            
-            # अगर डिज़ाइन की चौड़ाई 3 पिक्सल से ज़्यादा है, तो उसे भरें
-            if end_x - start_x > 3:
-                # ज़िगज़ैग (Satin Stitch) बनाने के लिए आगे-पीछे टांके लगाते हैं
-                pattern.add_stitch_absolute(pyembroidery.STITCH, start_x, y) # बाएं से दाएं
-                pattern.add_stitch_absolute(pyembroidery.STITCH, end_x, y)   # दाएं से बाएं
-                
-                # अगली लाइन पर जाने के लिए सुई उठाएं (Jump)
-                pattern.add_stitch_absolute(pyembroidery.JUMP, start_x, y + stitch_spacing)
+    # हर अलग आकार की अपनी लाइनें
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    jobs = []
+    for i in range(1, n):
+        x, y, cw, ch, area = [int(v) for v in stats[i]]
+        if area < MIN_AREA:
+            continue
+        cm = (labels[y:y + ch, x:x + cw] == i).astype(np.uint8) * 255
+        for chain in _component_chains(cm):
+            lines = []
+            for k, (a, b, yy, idx) in enumerate(chain):
+                if k % 2 == 0:
+                    lines.append((a + x, b + x, yy + y, idx))   # बाएँ → दाएँ
+                else:
+                    lines.append((b + x, a + x, yy + y, idx))   # दाएँ → बाएँ
+            jobs.append(lines)
+    if not jobs:
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
 
-    # 6. डिज़ाइन खत्म करें और .DST फाइल सेव करें
+    cur = (w // 2, h // 2)
+    while jobs:
+        # सबसे पास वाला आकार पहले (कम से कम जंप)
+        j = min(range(len(jobs)),
+                key=lambda k: (jobs[k][0][0] - cur[0]) ** 2 + (jobs[k][0][2] - cur[1]) ** 2)
+        lines = jobs.pop(j)
+
+        first = True
+        prev_sign = 1
+        for (xs, xe, y, idx) in lines:
+            sign = 1 if xe >= xs else -1
+            near = ((xs - sew.x) ** 2 + (y - sew.y) ** 2) ** 0.5 <= MAX_CONNECT
+            if (not first) and near and _inside(loose, sew.x, sew.y, xs, y):
+                sew.connect(xs, y)                    # अंदर ही अंदर जुड़ें, धागा नहीं कटेगा
+            else:
+                if not first:
+                    sew.lock(sew.x, sew.y, -prev_sign)  # पिछली लाइन पर लॉक
+                    sew.trim()                          # धागा काटें
+                sew.jump(xs, y)
+                sew.lock(xs, y, sign)                   # नई लाइन की शुरुआत पर लॉक
+            sew.sew_line(xs, xe, y, (idx % 3) * (FILL_STITCH_LEN // 3))
+            prev_sign = sign
+            first = False
+
+        sew.lock(sew.x, sew.y, -prev_sign)
+        sew.trim()
+        cur = (sew.x, sew.y)
+
     pattern.end()
     pyembroidery.write_dst(pattern, dst_path)
-    
     return dst_path
+
+
+def image_to_svg(image_path, svg_path):
+    """असली वेक्टर SVG: डिज़ाइन की आउटलाइन, असली साइज़ (mm) में।"""
+    mask = _design_mask(image_path)
+    h, w = mask.shape
+    contours, _ = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    paths = []
+    for c in contours:
+        c = cv2.approxPolyDP(c, 1.0, True)
+        if len(c) < 3:
+            continue
+        pts = c.reshape(-1, 2)
+        paths.append('M' + ' L'.join(f'{int(x)},{int(y)}' for x, y in pts) + ' Z')
+    svg = (f'<?xml version="1.0" encoding="UTF-8"?>\n'
+           f'<svg xmlns="http://www.w3.org/2000/svg" '
+           f'width="{w / 10:.1f}mm" height="{h / 10:.1f}mm" viewBox="0 0 {w} {h}">'
+           f'<path fill="#000000" fill-rule="evenodd" d="{" ".join(paths)}"/></svg>')
+    with open(svg_path, 'w', encoding='utf-8') as f:
+        f.write(svg)
+    return svg_path
 
 
 def _demo_image(prompt):
@@ -243,6 +448,9 @@ def register():
             return redirect(url_for('register'))
         if User.query.filter_by(username=u).first():
             flash('यह यूज़रनेम पहले से मौजूद है!', 'error')
+            return redirect(url_for('register'))
+        if User.query.filter_by(email=e).first():
+            flash('यह ईमेल पहले से रजिस्टर है!', 'error')
             return redirect(url_for('register'))
         
         # नया यूज़र: 20 क्रेडिट और 15 दिन का ट्रायल
@@ -311,7 +519,8 @@ def download_design(design_id, filetype):
         abort(404)
     if not os.path.exists(path):
         abort(404)
-    return send_file(path, as_attachment=True)
+    names = {'image': f'design_{d.id}.png', 'dst': f'D{d.id}.DST', 'svg': f'design_{d.id}.svg'}
+    return send_file(path, as_attachment=True, download_name=names[filetype])
 
 
 # ============================================================
@@ -332,9 +541,10 @@ def api_generate():
         return jsonify({'status': 'error', 'message': 'कृपया पहले प्रॉम्प्ट लिखें!'}), 400
 
     enhanced = (
-        f"{prompt}, high quality embroidery vector design, seamless floral "
-        f"pattern, zari work, intricate stitches, black background, "
-        f"clean sharp lines, punch-card style, textile pattern"
+        f"{prompt}, flat 2D embroidery design, bold solid shapes, "
+        f"black design on plain white background, high contrast, "
+        f"no shading, no gradient, no texture, no text, "
+        f"thick clean outlines, simple, centered, vector style"
     )
 
     try:
@@ -347,6 +557,7 @@ def api_generate():
                     "width": 1024,
                     "height": 1024,
                     "num_outputs": 1,
+                    "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines",
                     "scheduler": "DPMSolverMultistep"
                 }
             )
@@ -370,16 +581,14 @@ def api_generate():
             print('DST conversion failed:', e)
             dst_name = None
 
-        # ---------- SVG ----------
+        # ---------- SVG (असली वेक्टर) ----------
         svg_name = fname.replace('.png', '.svg')
         svg_path = os.path.join(app.config['UPLOAD_FOLDER'], svg_name)
-        with open(svg_path, 'w') as f:
-            f.write(f'<?xml version="1.0"?>\n'
-                    f'<svg xmlns="http://www.w3.org/2000/svg" '
-                    f'xmlns:xlink="http://www.w3.org/1999/xlink" '
-                    f'width="1024" height="1024">'
-                    f'<image width="1024" height="1024" '
-                    f'xlink:href="/static/generated/{fname}"/></svg>')
+        try:
+            image_to_svg(img_path, svg_path)
+        except Exception as e:
+            print('SVG conversion failed:', e)
+            svg_name = None
 
         # ---------- SAVE TO DB ----------
         design = Design(
@@ -398,9 +607,10 @@ def api_generate():
             'design_id': design.id,
             'image_url': f'/static/generated/{fname}',
             'dst_ready': bool(dst_name),
-            'svg_url': f'/static/generated/{svg_name}',
+            'svg_url': (f'/static/generated/{svg_name}' if svg_name else None),
             'remaining_credits': current_user.credits,
-            'message': 'डिज़ाइन सफलतापूर्वक तैयार! 🎉'
+            'message': ('डिज़ाइन सफलतापूर्वक तैयार! 🎉' if dst_name else
+                        'इमेज बन गई, पर इसमें से मशीन फ़ाइल नहीं बन पाई। कृपया सरल प्रॉम्प्ट आज़माएँ।')
         })
 
     except Exception as e:
@@ -477,36 +687,28 @@ with app.app_context():
         db.create_all()
         print("✅ Tables created successfully on PostgreSQL!")
         
-        if not User.query.filter_by(username='admin').first():
+        ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '').strip()
+        admin = User.query.filter_by(username='admin').first()
+        if not admin:
             admin = User(username='admin', email='admin@surat.local', is_admin=True)
-            admin.set_password('admin123')
             admin.plan = 'business'
             admin.credits = 9999
             admin.is_paid_user = True
+            admin.set_password(ADMIN_PASSWORD or secrets.token_urlsafe(24))
             db.session.add(admin)
             db.session.commit()
-            print('✅ Default admin created: admin / admin123')
+            print('✅ Admin अकाउंट बन गया')
+        elif ADMIN_PASSWORD:
+            admin.set_password(ADMIN_PASSWORD)   # Render Environment वाला पासवर्ड ही चलेगा
+            db.session.commit()
+        elif admin.check_password('admin123'):
+            admin.set_password(secrets.token_urlsafe(24))   # पुराना कमज़ोर पासवर्ड बंद
+            db.session.commit()
+            print('⚠️ पुराना admin123 पासवर्ड बंद कर दिया गया')
+        if not ADMIN_PASSWORD:
+            print('⚠️ Render Environment में ADMIN_PASSWORD डालिए, वरना admin लॉगिन नहीं होगा')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
-
-
-# ============================================================
-# TEMPORARY DEBUG: 500 एरर पेज पर दिखाने के लिए (काम होने पर हटा दें)
-# ============================================================
-@app.route('/debug-files')
-def debug_files():
-    t = os.path.join(base_dir, 'templates')
-    out = "BASE: " + base_dir + "\n" + repr(os.listdir(base_dir))
-    out += "\n\ntemplates फोल्डर मौजूद: " + str(os.path.isdir(t))
-    if os.path.isdir(t):
-        out += "\n" + repr(os.listdir(t))
-    return "<pre>" + out + "</pre>"
-
-
-@app.errorhandler(500)
-def show_error(e):
-    import traceback
-    return f"<pre>{traceback.format_exc()}</pre>", 500
 
 
 if __name__ == '__main__':
