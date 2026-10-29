@@ -483,7 +483,9 @@ def _ai_openai(prompt):
 
 
 def _ai_huggingface(prompt):
-    r = requests.post(f'https://router.huggingface.co/hf-inference/models/{HF_IMAGE_MODEL}',
+    r = requests.post('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell',
+                  
+
                       headers={'Authorization': f'Bearer {HF_TOKEN}'},
                       json={'inputs': prompt}, timeout=180)
     if r.status_code != 200:
