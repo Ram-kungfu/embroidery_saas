@@ -471,6 +471,11 @@ with app.app_context():
             print('✅ Default admin created: admin / admin123')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
+
+
+# ============================================================
+# TEMPORARY DEBUG: 500 एरर पेज पर दिखाने के लिए (काम होने पर हटा दें)
+# ============================================================
 @app.route('/debug-files')
 def debug_files():
     t = os.path.join(base_dir, 'templates')
@@ -480,10 +485,6 @@ def debug_files():
         out += "\n" + repr(os.listdir(t))
     return "<pre>" + out + "</pre>"
 
-
-# ============================================================
-# TEMPORARY DEBUG: 500 एरर पेज पर दिखाने के लिए (काम होने पर हटा दें)
-# ============================================================
 @app.errorhandler(500)
 def show_error(e):
     import traceback
