@@ -471,6 +471,11 @@ with app.app_context():
             print('✅ Default admin created: admin / admin123')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
+      import traceback
+
+@app.errorhandler(500)
+def show_error(e):
+    return f"<pre>{traceback.format_exc()}</pre>", 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
