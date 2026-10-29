@@ -481,14 +481,14 @@ def _ai_openai(prompt):
         return requests.get(item['url'], timeout=90).content
     raise RuntimeError('OpenAI से इमेज नहीं मिली')
 
-
 def _ai_huggingface(prompt):
-    API_URL = f"https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+    API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     r = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=180)
     if r.status_code != 200:
         raise RuntimeError(f'HTTP {r.status_code}: {r.text[:400]}')
     return r.content
+
 
 
 
