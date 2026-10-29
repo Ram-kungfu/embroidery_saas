@@ -26,6 +26,23 @@ load_dotenv()
 import os
 # Render को templates और static फोल्डर का पक्का रास्ता दिखाना
 base_dir = os.path.abspath(os.path.dirname(__file__))
+
+
+# फाइल नामों में छुपे अदृश्य अक्षर (\u200b) अपने आप हटाना
+def _clean_names(root):
+    for folder, dirs, files in os.walk(root, topdown=False):
+        for n in files + dirs:
+            clean = n.replace('\u200b', '').replace('\ufeff', '').strip()
+            if clean != n:
+                try:
+                    os.rename(os.path.join(folder, n), os.path.join(folder, clean))
+                except Exception as e:
+                    print('rename failed:', repr(n), e)
+
+
+_clean_names(os.path.join(base_dir, 'templates'))
+_clean_names(os.path.join(base_dir, 'static'))
+
 app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'), static_folder=os.path.join(base_dir, 'static'))
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'surat-embroidery-secret-key-change-me')
 
@@ -484,6 +501,7 @@ def debug_files():
     if os.path.isdir(t):
         out += "\n" + repr(os.listdir(t))
     return "<pre>" + out + "</pre>"
+
 
 @app.errorhandler(500)
 def show_error(e):
