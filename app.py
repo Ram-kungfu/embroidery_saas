@@ -472,11 +472,13 @@ with app.app_context():
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
       import traceback
-
 @app.errorhandler(500)
 def show_error(e):
+    import traceback
     return f"<pre>{traceback.format_exc()}</pre>", 500
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
