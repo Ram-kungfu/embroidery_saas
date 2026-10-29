@@ -166,7 +166,6 @@ def _design_mask(image_path):
     """
     इमेज से सिलने वाला हिस्सा (सफ़ेद=255) निकालता है।
     बैकग्राउंड काला हो या सफ़ेद, अपने आप पहचान लेता है।
-    नतीजा असली साइज़ में होता है: 1 पिक्सल = 0.1 mm।
     """
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -178,19 +177,23 @@ def _design_mask(image_path):
         img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
     img = cv2.GaussianBlur(img, (5, 5), 0)
 
-    # अपने आप सही थ्रेशोल्ड (Otsu): चमकीला हिस्सा = 255
+    # 1. अपने आप सही थ्रेशोल्ड (Otsu)
     _, mask = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # किनारे की पट्टी से बैकग्राउंड पहचानें; बैकग्राउंड सफ़ेद हो तो उल्टा करें
+    # 2. बैकग्राउंड पहचानें (अगर बैकग्राउंड सफ़ेद है, तो उल्टा करें)
     border = np.concatenate([mask[0, :], mask[-1, :], mask[:, 0], mask[:, -1]])
     if border.mean() > 127:
         mask = cv2.bitwise_not(mask)
+
+    # 3. अगर डिज़ाइन सिर्फ एक पतली लाइन (Outline) है, तो उसे मोटा करें ताकि सिलाई हो सके
+    kernel_thick = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.dilate(mask, kernel_thick, iterations=1)
 
     ys, xs = np.where(mask > 0)
     if len(xs) == 0:
         raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
 
-    # डिज़ाइन के चारों ओर की खाली जगह काटें, फिर असली साइज़ (mm) में लाएँ
+    # 4. क्रॉपिंग और असली साइज़ (mm) में बदलना
     mask = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
     ch, cw = mask.shape
     s = (DESIGN_SIZE_MM * 10.0) / max(ch, cw)
@@ -198,15 +201,13 @@ def _design_mask(image_path):
                       interpolation=cv2.INTER_LINEAR)
     _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
 
-    # 0.7 mm से पतली चीज़ें (जो साफ़ सिली नहीं जा सकतीं) और छोटे धब्बे हटाएँ
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    mask = cv2.copyMakeBorder(mask, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=0)   # किनारे की पतली चीज़ें भी हटें
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)[8:-8, 8:-8]
+    # 5. बहुत छोटे धब्बों को हटाना (नॉइज़ क्लीनिंग)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     clean = np.zeros_like(mask)
     for i in range(1, n):
         if stats[i, cv2.CC_STAT_AREA] >= MIN_AREA:
             clean[labels == i] = 255
+            
     if not clean.any():
         raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
     return clean
@@ -321,19 +322,21 @@ class _Sewer:
 
 def image_to_dst(image_path, dst_path):
     """
-    AI इमेज के डिज़ाइन वाले हिस्से को ही भरता है (खाली जगह नहीं),
-    असली साइज़ में, 0.4 mm घनत्व, 3.5 mm तक के टाँके, लॉक-स्टिच और ट्रिम के साथ।
+    AI इमेज के डिज़ाइन वाले हिस्से को ही भरता है (Outline हो या Solid),
+    असली साइज़ में, 0.4 mm घनत्व के साथ।
     """
-    mask = _design_mask(image_path)
+    try:
+        mask = _design_mask(image_path)
+    except Exception as e:
+        raise ValueError(f"Masking failed: {e}")
+        
     h, w = mask.shape
 
     pattern = pyembroidery.EmbPattern()
     pattern.add_thread(pyembroidery.EmbThread(color=0x000000, name='Color 1'))
-    sew = _Sewer(pattern, w // 2, h // 2)   # डिज़ाइन का केंद्र = मशीन का केंद्र
-    # किनारे पर 0.2 mm की छूट के साथ "अंदर" की जाँच (किनारे के पिक्सल पर जोड़ फेल न हो)
+    sew = _Sewer(pattern, w // 2, h // 2)
     loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
 
-    # हर अलग आकार की अपनी लाइनें
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     jobs = []
     for i in range(1, n):
@@ -345,16 +348,16 @@ def image_to_dst(image_path, dst_path):
             lines = []
             for k, (a, b, yy, idx) in enumerate(chain):
                 if k % 2 == 0:
-                    lines.append((a + x, b + x, yy + y, idx))   # बाएँ → दाएँ
+                    lines.append((a + x, b + x, yy + y, idx))
                 else:
-                    lines.append((b + x, a + x, yy + y, idx))   # दाएँ → बाएँ
+                    lines.append((b + x, a + x, yy + y, idx))
             jobs.append(lines)
+            
     if not jobs:
-        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला")
+        raise ValueError("इमेज में सिलने लायक कोई लाइन नहीं मिली")
 
     cur = (w // 2, h // 2)
     while jobs:
-        # सबसे पास वाला आकार पहले (कम से कम जंप)
         j = min(range(len(jobs)),
                 key=lambda k: (jobs[k][0][0] - cur[0]) ** 2 + (jobs[k][0][2] - cur[1]) ** 2)
         lines = jobs.pop(j)
@@ -364,14 +367,17 @@ def image_to_dst(image_path, dst_path):
         for (xs, xe, y, idx) in lines:
             sign = 1 if xe >= xs else -1
             near = ((xs - sew.x) ** 2 + (y - sew.y) ** 2) ** 0.5 <= MAX_CONNECT
+            
             if (not first) and near and _inside(loose, sew.x, sew.y, xs, y):
-                sew.connect(xs, y)                    # अंदर ही अंदर जुड़ें, धागा नहीं कटेगा
+                sew.connect(xs, y)
             else:
                 if not first:
-                    sew.lock(sew.x, sew.y, -prev_sign)  # पिछली लाइन पर लॉक
-                    sew.trim()                          # धागा काटें
+                    sew.lock(sew.x, sew.y, -prev_sign)
+                    sew.trim()
                 sew.jump(xs, y)
-                sew.lock(xs, y, sign)                   # नई लाइन की शुरुआत पर लॉक
+                sew.lock(xs, y, sign)
+                
+            # यहाँ टांके लगाएं
             sew.sew_line(xs, xe, y, (idx % 3) * (FILL_STITCH_LEN // 3))
             prev_sign = sign
             first = False
@@ -540,11 +546,13 @@ def api_generate():
     if not prompt:
         return jsonify({'status': 'error', 'message': 'कृपया पहले प्रॉम्प्ट लिखें!'}), 400
 
+    # ⚡ AI Prompt सुधार: हर बार नया डिज़ाइन बनेगा
     enhanced = (
-        f"{prompt}, flat 2D embroidery design, bold solid shapes, "
-        f"black design on plain white background, high contrast, "
-        f"no shading, no gradient, no texture, no text, "
-        f"thick clean outlines, simple, centered, vector style"
+        f"{prompt}, highly detailed unique intricate {uuid.uuid4().hex[:4]}, "
+        f"solid filled embroidery vector design, thick bold shapes, "
+        f"plain pure white background, no background elements, "
+        f"no shading, no gradients, no texture, no text, "
+        f"clean thick edges, centered, modern, creative"
     )
 
     try:
@@ -565,7 +573,7 @@ def api_generate():
                         "width": 1024,
                         "height": 1024,
                         "num_outputs": 1,
-                        "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines",
+                        "negative_prompt": "shading, gradient, photo, 3d, shadow, texture, text, watermark, blurry, thin lines, black background",
                         "scheduler": "DPMSolverMultistep"
                     }
                 )
@@ -610,7 +618,6 @@ def api_generate():
                 try:
                     print("Trying Hugging Face...")
                     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-                    # Hugging Face Flux मॉडल का इस्तेमाल
                     payload = {"inputs": enhanced}
                     res = requests.post("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", 
                                         headers=headers, json=payload, timeout=90)
