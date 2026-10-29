@@ -2,6 +2,9 @@
 {% block content %}
 <div class="text-center py-8">
     <h1 class="text-3xl font-extrabold mb-3 text-emerald-400">मासिक सब्सक्रिप्शन प्लान्स</h1>
+    <p class="text-gray-400 max-w-2xl mx-auto mb-6 text-sm">
+        सभी प्लान <b class="text-white">30 दिन (1 महीने)</b> की वैधता के साथ आते हैं। 1 क्रेडिट = 1 नया डिज़ाइन (साथ में .DST और .SVG फ़ाइल)।
+    </p>
     
     {% if not current_user.is_paid_user %}
     <div class="bg-indigo-900/50 border border-indigo-500 text-indigo-200 p-3 rounded-lg max-w-2xl mx-auto mb-8 text-sm">
@@ -15,6 +18,9 @@
             <div>
                 <h4 class="text-xl font-bold text-amber-400">Starter</h4>
                 <p class="text-3xl font-extrabold my-4">₹{{ plans.starter.price }}</p>
+                <p class="text-sm text-gray-300">⏳ वैधता: <b class="text-white">30 दिन (1 महीना)</b></p>
+                <p class="text-lg font-bold text-emerald-400 mt-2">🎨 {{ plans.starter.credits }} क्रेडिट्स</p>
+                <p class="text-xs text-gray-500 mt-1">महीने में {{ plans.starter.credits }} डिज़ाइन + .DST फ़ाइलें</p>
             </div>
             <button onclick="showPayment('starter', {{ plans.starter.price }})" class="w-full mt-6 bg-amber-600 hover:bg-amber-700 py-3 rounded-xl font-bold">खरीदें</button>
         </div>
@@ -23,6 +29,9 @@
             <div>
                 <h4 class="text-xl font-bold text-indigo-400">Pro</h4>
                 <p class="text-3xl font-extrabold my-4">₹{{ plans.pro.price }}</p>
+                <p class="text-sm text-gray-300">⏳ वैधता: <b class="text-white">30 दिन (1 महीना)</b></p>
+                <p class="text-lg font-bold text-emerald-400 mt-2">🎨 {{ plans.pro.credits }} क्रेडिट्स</p>
+                <p class="text-xs text-gray-500 mt-1">महीने में {{ plans.pro.credits }} डिज़ाइन + .DST फ़ाइलें</p>
             </div>
             <button onclick="showPayment('pro', {{ plans.pro.price }})" class="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 py-3 rounded-xl font-bold">खरीदें</button>
         </div>
@@ -31,6 +40,9 @@
             <div>
                 <h4 class="text-xl font-bold text-emerald-400">Business</h4>
                 <p class="text-3xl font-extrabold my-4">₹{{ plans.business.price }}</p>
+                <p class="text-sm text-gray-300">⏳ वैधता: <b class="text-white">30 दिन (1 महीना)</b></p>
+                <p class="text-lg font-bold text-emerald-400 mt-2">🎨 {{ plans.business.credits }} क्रेडिट्स</p>
+                <p class="text-xs text-gray-500 mt-1">महीने में {{ plans.business.credits }} डिज़ाइन + .DST फ़ाइलें</p>
             </div>
             <button onclick="showPayment('business', {{ plans.business.price }})" class="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 py-3 rounded-xl font-bold">खरीदें</button>
         </div>
