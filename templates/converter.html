@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}इमेज से मशीन फाइल{% endblock %}
+{% block content %}
+<div class="bg-gray-900 p-6 md:p-8 rounded-2xl border border-gray-800 shadow-2xl max-w-3xl mx-auto mt-10">
+    <h2 class="text-2xl font-bold text-amber-400 mb-6 border-b border-gray-800 pb-4">🖼️ इमेज को मशीन फाइल में बदलें</h2>
+    
+    <div class="space-y-6">
+        <!-- इमेज अपलोड -->
+        <div>
+            <label class="block text-sm font-medium mb-2 text-gray-300">अपनी डिज़ाइन इमेज चुनें (JPG, PNG):</label>
+            <input type="file" id="uploadInput" accept="image/*" 
+                   class="w-full p-3 bg-gray-950 border border-gray-700 rounded-lg focus:outline-none focus:border-amber-500 text-gray-300">
+        </div>
+
+        <!-- फॉर्मेट चुनें (सभी मशीनों के लिए) -->
+        <div>
+            <label class="block text-sm font-medium mb-2 text-gray-300">अपनी मशीन का फॉर्मेट चुनें:</label>
+            <select id="formatInput" class="w-full p-3 bg-gray-950 border border-gray-700 rounded-lg focus:outline-none focus:border-amber-500 text-white">
+                <optgroup label="सबसे आम (Most Common)">
+                    <option value="dst">Tajima (.DST) - सबसे ज़्यादा इस्तेमाल होता है</option>
+                    <option value="pes">Brother / Babylock (.PES)</option>
+                    <option value="jef">Janome (.JEF)</option>
+                    <option value="exp">Melco / Bernina (.EXP)</option>
+                </optgroup>
+                <optgroup label="अन्य ब्रांड्स (Other Brands)">
+                    <option value="vp3">Husqvarna Viking (.VP3)</option>
+                    <option value="hus">Husqvarna (.HUS)</option>
+                    <option value="xxx">Singer (.XXX)</option>
+                    <option value="sew">Janome (.SEW)</option>
+                    <option value="pec">Brother (.PEC)</option>
+                    <option value="csv">Data File (.CSV)</option>
+                </optgroup>
+            </select>
+        </div>
+
+        <button onclick="convertImage()" id="convertBtn"
+            class="w-full bg-amber-600 hover:bg-amber-700 font-bold py-3.5 rounded-xl shadow-lg transition">
+            फाइल कन्वर्ट करें ⚡ (1 क्रेडिट)
+        </button>
+    </div>
+
+    <!-- लोडर -->
+    <div id="loader" class="hidden text-center py-8">
+        <div class="inline-block animate-spin rounded-full h-10 w-10 border-4 border-amber-500 border-t-transparent"></div>
+        <p class="text-gray-400 mt-3">इमेज को मशीन फाइल में बदला जा रहा है...</p>
+    </div>
+
+    <!-- परिणाम -->
+    <div id="resultContainer" class="hidden mt-8 bg-gray-950 p-6 rounded-xl border border-gray-800 text-center">
+        <h4 class="text-lg font-semibold mb-4 text-emerald-400">🎉 फाइल तैयार है!</h4>
+        <a id="downloadBtn" href="#" class="inline-block bg-emerald-600 hover:bg-emerald-700 font-bold px-8 py-3 rounded-xl shadow-lg transition">
+            ⬇️ मशीन फाइल डाउनलोड करें
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function convertImage() {
+    const fileInput = document.getElementById('uploadInput');
+    const format = document.getElementById('formatInput').value;
+    
+    if (!fileInput.files.length) {
+        alert('कृपया पहले कोई इमेज चुनें!');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('image', fileInput.files[0]);
+    formData.append('format', format);
+
+    document.getElementById('loader').classList.remove('hidden');
+    document.getElementById('resultContainer').classList.add('hidden');
+    document.getElementById('convertBtn').disabled = true;
+
+    try {
+        const res = await fetch('/api/convert-upload', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        
+        document.getElementById('loader').classList.add('hidden');
+        document.getElementById('convertBtn').disabled = false;
+
+        if (res.ok) {
+            document.getElementById('downloadBtn').href = data.download_url;
+            document.getElementById('downloadBtn').setAttribute('download', `design.${format}`);
+            document.getElementById('resultContainer').classList.remove('hidden');
+            
+            const nc = document.getElementById('navCredits');
+            if (nc) nc.innerText = data.remaining_credits;
+        } else {
+            alert('एरर: ' + data.message);
+        }
+    } catch (e) {
+        document.getElementById('loader').classList.add('hidden');
+        document.getElementById('convertBtn').disabled = false;
+        alert('सर्वर से कनेक्ट करने में समस्या आई।');
+    }
+}
+</script>
+{% endblock %}
