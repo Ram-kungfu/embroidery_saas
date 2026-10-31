@@ -794,6 +794,120 @@ with app.app_context():
             print('⚠️ Render Environment में ADMIN_PASSWORD डालिए, वरना admin लॉगिन नहीं होगा')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
+@app.route('/api/convert-upload', methods=['POST'])
+@login_required
+def api_convert_upload():
+    if 'image' not in request.files:
+        return jsonify({'status': 'error', 'message': 'कोई इमेज अपलोड नहीं की गई!'}), 400
+    
+    file = request.files['image']
+    file_format = request.form.get('format', 'dst').lower()
+    
+    # समर्थित फॉर्मेट्स की लिस्ट
+    SUPPORTED_FORMATS = ['dst', 'pes', 'jef', 'exp', 'vp3', 'xxx', 'hus', 'sew', 'pec', 'csv']
+    if file_format not in SUPPORTED_FORMATS:
+        file_format = 'dst'
+    
+    if file.filename == '':
+        return jsonify({'status': 'error', 'message': 'फाइल नहीं चुनी गई!'}), 400
+        
+    if current_user.credits <= 0:
+        return jsonify({'status': 'error', 'message': 'क्रेडिट्स खत्म हो गए हैं!'}), 402
+
+    try:
+        # 1. अपलोड की गई इमेज को सेव करें
+        ext = os.path.splitext(file.filename)[1] or '.png'
+        img_name = f"upload_{uuid.uuid4().hex[:10]}{ext}"
+        img_path = os.path.join(app.config['UPLOAD_FOLDER'], img_name)
+        file.save(img_path)
+
+        # 2. इमेज से डिज़ाइन का मास्क (Mask) निकालें
+        mask = _design_mask(img_path)
+
+        # 3. मशीन फाइल बनाने के लिए पैटर्न तैयार करें
+        pattern = pyembroidery.EmbPattern()
+        pattern.add_thread(pyembroidery.EmbThread(color=0x000000, name='Color 1'))
+        
+        h, w = mask.shape
+        sew = _Sewer(pattern, w // 2, h // 2)
+        loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
+        
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        jobs = []
+        for i in range(1, n):
+            x, y, cw, ch, area = [int(v) for v in stats[i]]
+            if area < MIN_AREA: continue
+            cm = (labels[y:y + ch, x:x + cw] == i).astype(np.uint8) * 255
+            for chain in _component_chains(cm):
+                lines = []
+                for k, (a, b, yy, idx) in enumerate(chain):
+                    if k % 2 == 0:
+                        lines.append((a + x, b + x, yy + y, idx))
+                    else:
+                        lines.append((b + x, a + x, yy + y, idx))
+                jobs.append(lines)
+
+        while jobs:
+            j = min(range(len(jobs)), key=lambda k: (jobs[k][0][0] - sew.x) ** 2 + (jobs[k][0][2] - sew.y) ** 2)
+            lines = jobs.pop(j)
+            first = True
+            prev_sign = 1
+            for (xs, xe, y, idx) in lines:
+                sign = 1 if xe >= xs else -1
+                near = ((xs - sew.x) ** 2 + (y - sew.y) ** 2) ** 0.5 <= MAX_CONNECT
+                if (not first) and near and _inside(loose, sew.x, sew.y, xs, y):
+                    sew.connect(xs, y)
+                else:
+                    if not first:
+                        sew.lock(sew.x, sew.y, -prev_sign)
+                        sew.trim()
+                    sew.jump(xs, y)
+                    sew.lock(xs, y, sign)
+                sew.sew_line(xs, xe, y, (idx % 3) * (FILL_STITCH_LEN // 3))
+                prev_sign = sign
+                first = False
+            sew.lock(sew.x, sew.y, -prev_sign)
+            sew.trim()
+
+        pattern.end()
+
+        # 4. यूज़र द्वारा चुने गए फॉर्मेट में फाइल सेव करें
+        output_name = f"machine_{uuid.uuid4().hex[:10]}.{file_format}"
+        output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_name)
+        
+        # pyembroidery सीधे सभी फॉर्मेट में सेव कर सकता है
+        try:
+            pyembroidery.write(pattern, output_path)
+        except Exception as e:
+            # अगर कोई खास फॉर्मेट सपोर्ट न करे, तो DST में सेव करें
+            print(f"Format {file_format} failed: {e}. Falling back to DST.")
+            output_name = output_name.replace(f'.{file_format}', '.dst')
+            output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_name)
+            pyembroidery.write_dst(pattern, output_path)
+
+        # 5. डेटाबेस में सेव करें और क्रेडिट काटें
+        design = Design(
+            user_id=current_user.id,
+            prompt=f"Uploaded Image ({file_format.upper()})",
+            image_file=img_name,
+            dst_file=output_name,
+            svg_file=None
+        )
+        current_user.credits -= 1
+        db.session.add(design)
+        db.session.commit()
+
+        return jsonify({
+            'status': 'success',
+            'design_id': design.id,
+            'download_url': f'/download/{design.id}/dst', 
+            'remaining_credits': current_user.credits,
+            'message': f'फाइल सफलतापूर्वक {file_format.upper()} फॉर्मेट में बदल गई!'
+        })
+        
+    except Exception as e:
+        print("Upload Conversion Error:", e)
+        return jsonify({'status': 'error', 'message': f'कन्वर्जन में समस्या: {str(e)}'}), 500
 
 
 if __name__ == '__main__':
