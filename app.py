@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import types
 import uuid
 import secrets
 import base64
@@ -153,6 +154,25 @@ def load_user(user_id):
 # HELPER: AI IMAGE → मशीन-रेडी .DST (सुरक्षित फिल) + असली वेक्टर SVG
 # ============================================================
 # DST में 1 unit = 0.1 mm
+# pyembroidery के कुछ वर्शन में EmbPattern/EmbThread नाम "मॉड्यूल" बन जाते हैं
+# ("'module' object is not callable" एरर), इसलिए क्लास सीधे उसकी अपनी फाइल से लेते हैं।
+try:
+    from pyembroidery.EmbPattern import EmbPattern as _EmbPattern
+    from pyembroidery.EmbThread import EmbThread as _EmbThread
+except Exception:
+    _EmbPattern = pyembroidery.EmbPattern
+    _EmbThread = pyembroidery.EmbThread
+
+
+def _make_thread(r, g, b):
+    """धागे का रंग (R, G, B) बनाता है।"""
+    thread = _EmbThread()
+    try:
+        thread.set_color(r, g, b)
+    except AttributeError:
+        thread.color = (r << 16) | (g << 8) | b
+    return thread
+
 try:
     DESIGN_SIZE_MM = max(10.0, min(300.0, float(os.getenv('DESIGN_SIZE_MM', '100'))))
 except ValueError:
@@ -335,10 +355,8 @@ def image_to_dst(image_path, dst_path):
     mask = _design_mask(image_path)
     h, w = mask.shape
 
-    pattern = pyembroidery.EmbPattern()
-    thread = pyembroidery.EmbThread()
-    thread.set_color(0, 0, 0)               # काला धागा
-    pattern.add_thread(thread)
+    pattern = _EmbPattern()
+    pattern.add_thread(_make_thread(0, 0, 0))   # काला धागा
     sew = _Sewer(pattern, w // 2, h // 2)   # डिज़ाइन का केंद्र = मशीन का केंद्र
     # किनारे पर 0.2 mm की छूट के साथ "अंदर" की जाँच (किनारे के पिक्सल पर जोड़ फेल न हो)
     loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
@@ -696,7 +714,7 @@ def convert_image_to_machine(src_path, out_base, formats, size_mm, n_colors, ski
     if not layers:
         raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला।")
 
-    pattern = pyembroidery.EmbPattern()
+    pattern = _EmbPattern()
     sew = _ConvSewer(pattern, W // 2, H // 2)
     sigma = max(1.0, scale * 0.7)
     used = []
@@ -712,9 +730,7 @@ def convert_image_to_machine(src_path, out_base, formats, size_mm, n_colors, ski
             continue
 
         b, g, r = colors[k]
-        thread = pyembroidery.EmbThread()
-        thread.set_color(r, g, b)
-        pattern.add_thread(thread)
+        pattern.add_thread(_make_thread(r, g, b))
         if used:
             sew.color_change()
         before = sew.count
@@ -834,7 +850,14 @@ def api_convert():
     except Exception as e:
         print('Convert error:', e)
         traceback.print_exc()
-        return jsonify({'status': 'error', 'message': f'कन्वर्ट नहीं हो पाया: {e}'}), 400
+        where = ''
+        if current_user.is_admin or os.getenv('SHOW_ERROR_DETAILS') == '1':   # गड़बड़ की जगह सिर्फ़ admin को (या जाँच के लिए)
+            try:
+                fr = traceback.extract_tb(e.__traceback__)[-1]
+                where = f' [{os.path.basename(fr.filename)}:{fr.lineno} {fr.name}]'
+            except Exception:
+                pass
+        return jsonify({'status': 'error', 'message': f'कन्वर्ट नहीं हो पाया: {e}{where}'}), 400
     finally:
         try:
             os.remove(src_path)
