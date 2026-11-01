@@ -1,8 +1,10 @@
 import os
 import io
+import re
 import uuid
 import secrets
 import base64
+import zipfile
 import traceback
 import requests
 from datetime import datetime
@@ -508,6 +510,355 @@ def generate_ai_image(prompt):
 
 
 # ============================================================
+# कन्वर्टर: कोई भी डिज़ाइन इमेज → मल्टी-कलर मशीन फ़ाइल (मल्टी-हेड मशीन के लिए)
+# pyembroidery जो फॉर्मेट लिख सकता है: DST, PES, JEF, EXP, VP3, XXX, U01, PEC
+# (HUS और SEW सिर्फ़ पढ़े जा सकते हैं, लिखे नहीं जा सकते)
+# ============================================================
+CONVERT_FORMATS = ['dst', 'pes', 'jef', 'exp', 'vp3', 'xxx', 'u01', 'pec']
+try:
+    CONVERT_MAX_MM = max(50.0, min(500.0, float(os.getenv('CONVERT_MAX_MM', '300'))))
+except ValueError:
+    CONVERT_MAX_MM = 300.0           # सबसे बड़ा डिज़ाइन साइज़ (mm)
+try:
+    CONVERT_COST = max(0, int(os.getenv('CONVERT_CREDIT_COST', '0')))
+except ValueError:
+    CONVERT_COST = 0                 # हर कन्वर्ज़न पर कटने वाले क्रेडिट (0 = मुफ़्त)
+CONVERT_MAX_STITCHES = 250000
+CONVERT_SPM = 700                    # समय के अनुमान के लिए: टाँके प्रति मिनट
+
+
+class _ConvSewer(_Sewer):
+    """मल्टी-कलर के लिए: ऊँची टाँका-सीमा और रंग बदलने की सुविधा।"""
+
+    def stitch(self, x, y):
+        X, Y = self._pos(x, y)
+        self.p.add_stitch_absolute(pyembroidery.STITCH, X, Y)
+        self.x, self.y = x, y
+        self.count += 1
+        if self.count > CONVERT_MAX_STITCHES:
+            raise ValueError("डिज़ाइन बहुत भारी है, साइज़ या रंग कम कीजिए।")
+
+    def color_change(self):
+        X, Y = self._pos(self.x, self.y)
+        self.p.add_stitch_absolute(pyembroidery.COLOR_CHANGE, X, Y)
+
+
+def _load_bgr(path):
+    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise ValueError("इमेज पढ़ी नहीं जा सकी। कृपया PNG या JPG फ़ाइल डालें।")
+    if img.dtype != np.uint8:
+        img = (img.astype(np.float32) / (img.max() / 255.0 if img.max() > 0 else 1)).astype(np.uint8)
+    alpha = None
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.shape[2] == 4:
+        alpha = img[:, :, 3]
+        img = img[:, :, :3]
+    return img, alpha
+
+
+def _quantize(img, alpha, n_colors, skip_bg):
+    """इमेज को n रंगों में बाँटता है। लौटाता है: (लेबल नक्शा, हर लेबल का BGR रंग)। -1 = सिलना नहीं।"""
+    h, w = img.shape[:2]
+    k = 900.0 / max(h, w)
+    if k < 1:
+        img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+        if alpha is not None:
+            alpha = cv2.resize(alpha, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_AREA)
+    img = cv2.bilateralFilter(img, 7, 40, 7)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+
+    cv2.setRNGSeed(1)
+    rng = np.random.default_rng(1)
+    sample = lab if len(lab) <= 120000 else lab[rng.choice(len(lab), 120000, replace=False)]
+    K = max(2, min(n_colors, len(sample)))
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 25, 0.5)
+    _, _, centers = cv2.kmeans(sample, K, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+
+    labels = np.empty(len(lab), dtype=np.int32)
+    for s in range(0, len(lab), 200000):
+        chunk = lab[s:s + 200000]
+        d = ((chunk[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        labels[s:s + 200000] = d.argmin(axis=1)
+    labels = labels.reshape(img.shape[:2])
+
+    # हर रंग का असली औसत BGR (धागे का रंग)
+    flat_bgr = img.reshape(-1, 3).astype(np.float64)
+    flat_lab = labels.reshape(-1)
+    colors = []
+    for i in range(K):
+        sel = flat_lab == i
+        colors.append(tuple(int(v) for v in flat_bgr[sel].mean(axis=0)) if sel.any() else (0, 0, 0))
+
+    if alpha is not None:
+        labels[alpha < 128] = -1          # पारदर्शी हिस्सा = बैकग्राउंड
+
+    if skip_bg:
+        border = np.concatenate([labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]])
+        border = border[border >= 0]
+        if len(border):
+            bg = int(np.bincount(border, minlength=K).argmax())
+            labels[labels == bg] = -1     # जो रंग किनारों पर सबसे ज़्यादा है = कपड़ा/बैकग्राउंड
+    return labels, colors
+
+
+def _clean_layer(mask):
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.copyMakeBorder(mask, 6, 6, 6, 6, cv2.BORDER_CONSTANT, value=0)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)[6:-6, 6:-6]
+    n, lbl, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    out = np.zeros_like(mask)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= MIN_AREA:
+            out[lbl == i] = 255
+    return out
+
+
+def _sew_mask(sew, mask):
+    """एक रंग की परत को सिलता है (ज़िगज़ैग फिल, लॉक-स्टिच, ट्रिम)। AI वाले DST जैसी ही मज़बूत विधि।"""
+    loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    jobs = []
+    for i in range(1, n):
+        x, y, cw, ch, area = [int(v) for v in stats[i]]
+        if area < MIN_AREA:
+            continue
+        cm = (labels[y:y + ch, x:x + cw] == i).astype(np.uint8) * 255
+        for chain in _component_chains(cm):
+            lines = []
+            for k, (a, b, yy, idx) in enumerate(chain):
+                if k % 2 == 0:
+                    lines.append((a + x, b + x, yy + y, idx))
+                else:
+                    lines.append((b + x, a + x, yy + y, idx))
+            jobs.append(lines)
+
+    cur = (sew.x, sew.y)
+    while jobs:
+        j = min(range(len(jobs)),
+                key=lambda k: (jobs[k][0][0] - cur[0]) ** 2 + (jobs[k][0][2] - cur[1]) ** 2)
+        lines = jobs.pop(j)
+        first = True
+        prev_sign = 1
+        for (xs, xe, y, idx) in lines:
+            sign = 1 if xe >= xs else -1
+            near = ((xs - sew.x) ** 2 + (y - sew.y) ** 2) ** 0.5 <= MAX_CONNECT
+            if (not first) and near and _inside(loose, sew.x, sew.y, xs, y):
+                sew.connect(xs, y)
+            else:
+                if not first:
+                    sew.lock(sew.x, sew.y, -prev_sign)
+                    sew.trim()
+                sew.jump(xs, y)
+                sew.lock(xs, y, sign)
+            sew.sew_line(xs, xe, y, (idx % 3) * (FILL_STITCH_LEN // 3))
+            prev_sign = sign
+            first = False
+        sew.lock(sew.x, sew.y, -prev_sign)
+        sew.trim()
+        cur = (sew.x, sew.y)
+
+
+def convert_image_to_machine(src_path, out_base, formats, size_mm, n_colors, skip_bg):
+    """
+    इमेज → मल्टी-कलर मशीन फ़ाइलें।
+    out_base: बिना एक्सटेंशन का पाथ (जैसे /x/conv_1_ab12). लौटाता है: dict (files, stats, colors, preview)
+    """
+    img, alpha = _load_bgr(src_path)
+    labels, colors = _quantize(img, alpha, n_colors, skip_bg)
+
+    fg = labels >= 0
+    if not fg.any():
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला। 'बैकग्राउंड न सिलें' बंद करके देखें।")
+    ys, xs = np.where(fg)
+    labels = labels[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    ch, cw = labels.shape
+    scale = (size_mm * 10.0) / max(ch, cw)
+    W, H = max(1, int(round(cw * scale))), max(1, int(round(ch * scale)))
+    ppm = cw / (W / 10.0)            # छोटी इमेज के पिक्सल प्रति mm
+
+    # हर रंग की परत की जानकारी और सिलाई का क्रम
+    layers = []
+    for k in range(len(colors)):
+        small = (labels == k).astype(np.uint8) * 255
+        area = int((small > 0).sum())
+        if area == 0:
+            continue
+        dist = cv2.distanceTransform(small, cv2.DIST_L2, 3)
+        thick_mm = 2.0 * float(dist[small > 0].mean()) / ppm
+        b, g, r = colors[k]
+        lum = 0.114 * b + 0.587 * g + 0.299 * r
+        thin = thick_mm < 2.5        # आउटलाइन/बारीक डिटेल = सबसे ऊपर, आख़िर में
+        key = (1, -lum) if thin else (0, -area)   # पहले बड़े हिस्से, फिर बारीक (हल्के से गहरा)
+        layers.append((key, k, area, thin))
+    layers.sort(key=lambda t: t[0])
+    if not layers:
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला।")
+
+    pattern = pyembroidery.EmbPattern()
+    sew = _ConvSewer(pattern, W // 2, H // 2)
+    sigma = max(1.0, scale * 0.7)
+    used = []
+    for (_, k, area, thin) in layers:
+        m = (labels == k).astype(np.uint8) * 255
+        m = cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR)
+        m = cv2.GaussianBlur(m, (0, 0), sigma)
+        _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)
+        if not thin:
+            m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))  # ऊपर की परत से 0.3 mm दबाव, गैप नहीं
+        m = _clean_layer(m)
+        if not m.any():
+            continue
+
+        b, g, r = colors[k]
+        thread = pyembroidery.EmbThread()
+        thread.set_color(r, g, b)
+        pattern.add_thread(thread)
+        if used:
+            sew.color_change()
+        before = sew.count
+        _sew_mask(sew, m)
+        used.append({'k': k, 'bgr': colors[k], 'stitches': sew.count - before})
+    if not used:
+        raise ValueError("इमेज में सिलने लायक डिज़ाइन नहीं मिला।")
+    sew.end()
+
+    files = {}
+    for fmt in formats:
+        path = f'{out_base}.{fmt}'
+        pyembroidery.write(pattern, path)
+        files[fmt] = path
+
+    # रंग प्रीव्यू (सिलाई के क्रम में)
+    prev = np.full((ch, cw, 3), 235, np.uint8)
+    for u in used:
+        prev[labels == u['k']] = u['bgr']
+    pk = 700.0 / max(ch, cw)
+    if pk < 1:
+        prev = cv2.resize(prev, (int(cw * pk), int(ch * pk)), interpolation=cv2.INTER_AREA)
+    preview_path = f'{out_base}_p.png'
+    cv2.imwrite(preview_path, prev)
+
+    total = sew.count
+    colors_out = []
+    for i, u in enumerate(used):
+        b, g, r = u['bgr']
+        colors_out.append({'needle': i + 1, 'hex': '#%02x%02x%02x' % (r, g, b), 'stitches': u['stitches']})
+    stats = {
+        'width_mm': round(W / 10.0, 1), 'height_mm': round(H / 10.0, 1),
+        'stitches': total, 'colors': len(used), 'color_changes': len(used) - 1,
+        'minutes': round(total / float(CONVERT_SPM), 1),
+        'density_mm': FILL_SPACING / 10.0, 'stitch_type': 'फिल (ज़िगज़ैग)',
+    }
+    return {'files': files, 'stats': stats, 'colors': colors_out, 'preview': preview_path}
+
+
+def _threads_txt(stats, colors):
+    lines = ['DESIGN SIZE: %.1f x %.1f mm' % (stats['width_mm'], stats['height_mm']),
+             'STITCHES: %d   COLORS: %d   COLOR CHANGES: %d' % (stats['stitches'], stats['colors'], stats['color_changes']),
+             'STITCH TYPE: FILL   DENSITY: %.1f mm' % stats['density_mm'],
+             '']
+    for c in colors:
+        lines.append('NEEDLE %d : %s : %d stitches' % (c['needle'], c['hex'].upper(), c['stitches']))
+    return '\r\n'.join(lines) + '\r\n'
+
+
+# ============================================================
+# ROUTES: कन्वर्टर (इमेज अपलोड → मल्टी-कलर मशीन फ़ाइल)
+# ============================================================
+@app.route('/converter')
+@login_required
+def converter():
+    return render_template('converter.html', user=current_user,
+                           max_mm=int(CONVERT_MAX_MM), cost=CONVERT_COST)
+
+
+@app.route('/api/convert', methods=['POST'])
+@login_required
+def api_convert():
+    if not current_user.is_trial_active():
+        return jsonify({'status': 'error', 'message': 'आपका 15 दिन का ट्रायल खत्म हो गया है! कृपया प्लान खरीदें।'}), 402
+    if CONVERT_COST and current_user.credits < CONVERT_COST:
+        return jsonify({'status': 'error', 'message': 'क्रेडिट्स खत्म हो गए हैं! कृपया प्लान खरीदें।'}), 402
+
+    f = request.files.get('image')
+    if not f or not f.filename:
+        return jsonify({'status': 'error', 'message': 'कृपया पहले डिज़ाइन की इमेज चुनें।'}), 400
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.bmp'):
+        return jsonify({'status': 'error', 'message': 'कृपया PNG या JPG इमेज डालें।'}), 400
+
+    fmt = (request.form.get('format') or 'dst').lower()
+    if fmt != 'all' and fmt not in CONVERT_FORMATS:
+        fmt = 'dst'
+    try:
+        size_mm = float(request.form.get('size_mm') or 100)
+    except ValueError:
+        size_mm = 100.0
+    size_mm = max(20.0, min(CONVERT_MAX_MM, size_mm))
+    try:
+        n_colors = int(request.form.get('colors') or 6)
+    except ValueError:
+        n_colors = 6
+    n_colors = max(2, min(12, n_colors))
+    skip_bg = (request.form.get('skip_bg', '1') != '0')
+
+    base = f'conv_{current_user.id}_{uuid.uuid4().hex[:10]}'
+    out_base = os.path.join(app.config['UPLOAD_FOLDER'], base)
+    src_path = out_base + '_src' + ext
+    f.save(src_path)
+    try:
+        formats = CONVERT_FORMATS if fmt == 'all' else [fmt]
+        res = convert_image_to_machine(src_path, out_base, formats, size_mm, n_colors, skip_bg)
+        if fmt == 'all':
+            with zipfile.ZipFile(out_base + '.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+                for ff, pth in res['files'].items():
+                    z.write(pth, f'DESIGN.{ff.upper()}')
+                z.writestr('THREADS.TXT', _threads_txt(res['stats'], res['colors']))
+            download_url = f'/converted/{base}.zip'
+        else:
+            download_url = f'/converted/{base}.{fmt}'
+        if CONVERT_COST:
+            current_user.credits -= CONVERT_COST
+            db.session.commit()
+        return jsonify({
+            'status': 'success',
+            'download_url': download_url,
+            'format': fmt,
+            'preview_url': f'/converted/{base}_p.png',
+            'stats': res['stats'],
+            'colors': res['colors'],
+            'remaining_credits': current_user.credits,
+        })
+    except Exception as e:
+        print('Convert error:', e)
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': f'कन्वर्ट नहीं हो पाया: {e}'}), 400
+    finally:
+        try:
+            os.remove(src_path)
+        except OSError:
+            pass
+
+
+@app.route('/converted/<name>')
+@login_required
+def converted_file(name):
+    # सिर्फ़ अपने ही बनाए फ़ाइल नाम (conv_<user id>_<10 hex>...) डाउनलोड हो सकते हैं
+    if not re.fullmatch(r'conv_%d_[0-9a-f]{10}(_p)?\.[a-z0-9]{2,4}' % current_user.id, name):
+        abort(404)
+    path = os.path.join(app.config['UPLOAD_FOLDER'], name)
+    if not os.path.exists(path):
+        abort(404)
+    if name.endswith('_p.png'):
+        return send_file(path, mimetype='image/png')
+    ext = name.rsplit('.', 1)[-1]
+    download_name = 'DESIGNS.zip' if ext == 'zip' else 'DESIGN.' + ext.upper()
+    return send_file(path, as_attachment=True, download_name=download_name)
+
+
+# ============================================================
 # ROUTES: AUTH
 # ============================================================
 @app.route('/login', methods=['GET', 'POST'])
@@ -729,123 +1080,6 @@ def api_submit_payment():
     db.session.commit()
 
     return jsonify({'status': 'success', 'message': 'पेमेंट रिक्वेस्ट भेज दी गई है!'})
-  # ============================================================
-# NEW: IMAGE TO MACHINE FILE CONVERTER (Manual Upload)
-# ============================================================
-@app.route('/api/convert-upload', methods=['POST'])
-@login_required
-def api_convert_upload():
-    if 'image' not in request.files:
-        return jsonify({'status': 'error', 'message': 'कोई इमेज अपलोड नहीं की गई!'}), 400
-    
-    file = request.files['image']
-    file_format = request.form.get('format', 'dst').lower()
-    
-    SUPPORTED_FORMATS = ['dst', 'pes', 'jef', 'exp', 'vp3', 'xxx', 'hus', 'sew', 'pec', 'csv']
-    if file_format not in SUPPORTED_FORMATS:
-        file_format = 'dst'
-    
-    if file.filename == '':
-        return jsonify({'status': 'error', 'message': 'फाइल नहीं चुनी गई!'}), 400
-        
-    if current_user.credits <= 0:
-        return jsonify({'status': 'error', 'message': 'क्रेडिट्स खत्म हो गए हैं!'}), 402
-
-    try:
-        # 1. अपलोड की गई इमेज को सेव करें
-        ext = os.path.splitext(file.filename)[1] or '.png'
-        img_name = f"upload_{uuid.uuid4().hex[:10]}{ext}"
-        img_path = os.path.join(app.config['UPLOAD_FOLDER'], img_name)
-        file.save(img_path)
-
-        # 2. इमेज से डिज़ाइन का मास्क (Mask) निकालें
-        mask = _design_mask(img_path)
-
-        # 3. मशीन फाइल बनाने के लिए पैटर्न तैयार करें
-        pattern = pyembroidery.EmbPattern()
-        pattern.add_thread(pyembroidery.EmbThread(color=0x000000, name='Color 1'))
-        
-        h, w = mask.shape
-        sew = _Sewer(pattern, w // 2, h // 2)
-        loose = cv2.dilate(mask, np.ones((5, 5), np.uint8))
-        
-        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        jobs = []
-        for i in range(1, n):
-            x, y, cw, ch, area = [int(v) for v in stats[i]]
-            if area < MIN_AREA: continue
-            cm = (labels[y:y + ch, x:x + cw] == i).astype(np.uint8) * 255
-            for chain in _component_chains(cm):
-                lines = []
-                for k, (a, b, yy, idx) in enumerate(chain):
-                    if k % 2 == 0:
-                        lines.append((a + x, b + x, yy + y, idx))
-                    else:
-                        lines.append((b + x, a + x, yy + y, idx))
-                jobs.append(lines)
-
-        while jobs:
-            j = min(range(len(jobs)), key=lambda k: (jobs[k][0][0] - sew.x) ** 2 + (jobs[k][0][2] - sew.y) ** 2)
-            lines = jobs.pop(j)
-            first = True
-            prev_sign = 1
-            for (xs, xe, y, idx) in lines:
-                sign = 1 if xe >= xs else -1
-                near = ((xs - sew.x) ** 2 + (y - sew.y) ** 2) ** 0.5 <= MAX_CONNECT
-                if (not first) and near and _inside(loose, sew.x, sew.y, xs, y):
-                    sew.connect(xs, y)
-                else:
-                    if not first:
-                        sew.lock(sew.x, sew.y, -prev_sign)
-                        sew.trim()
-                    sew.jump(xs, y)
-                    sew.lock(xs, y, sign)
-                sew.sew_line(xs, xe, y, (idx % 3) * (FILL_STITCH_LEN // 3))
-                prev_sign = sign
-                first = False
-            sew.lock(sew.x, sew.y, -prev_sign)
-            sew.trim()
-
-        pattern.end()
-
-        # 4. यूज़र द्वारा चुने गए फॉर्मेट में फाइल सेव करें
-        output_name = f"machine_{uuid.uuid4().hex[:10]}.{file_format}"
-        output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_name)
-        
-        try:
-            pyembroidery.write(pattern, output_path)
-        except Exception as e:
-            print(f"Format {file_format} failed: {e}. Falling back to DST.")
-            output_name = output_name.replace(f'.{file_format}', '.dst')
-            output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_name)
-            pyembroidery.write_dst(pattern, output_path)
-
-        # 5. डेटाबेस में सेव करें और क्रेडिट काटें
-        design = Design(
-            user_id=current_user.id,
-            prompt=f"Uploaded Image ({file_format.upper()})",
-            image_file=img_name,
-            dst_file=output_name,
-            svg_file=None
-        )
-        current_user.credits -= 1
-        db.session.add(design)
-        db.session.commit()
-
-        return jsonify({
-            'status': 'success',
-            'design_id': design.id,
-            'download_url': f'/download/{design.id}/dst', 
-            'remaining_credits': current_user.credits,
-            'message': f'फाइल सफलतापूर्वक {file_format.upper()} फॉर्मेट में बदल गई!'
-        })
-        
-    except Exception as e:
-        print("Upload Conversion Error:", e)
-        return jsonify({'status': 'error', 'message': f'कन्वर्जन में समस्या: {str(e)}'}), 500
-# ============================================================
-# यहाँ तक कनवर्टर कोड है
-# ============================================================
 
 
 # ============================================================
@@ -911,6 +1145,7 @@ with app.app_context():
             print('⚠️ Render Environment में ADMIN_PASSWORD डालिए, वरना admin लॉगिन नहीं होगा')
     except Exception as e:
         print(f'❌ Database initialization error: {e}')
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
